@@ -280,7 +280,7 @@ QtCoinViewer::QtCoinViewer(EnvironmentBasePtr penv)
     _pviewer->setSceneGraph(_ivRoot);
     _pviewer->setAutoClippingStrategy(SoQtViewer::CONSTANT_NEAR_PLANE, 0.01f);
     _pviewer->setSeekTime(1.0f);
-
+    _pviewer->setAntialiasing(true, 4);
     _SetBkgndColor(Vector(1,1,1));
 
     // setup a callback handler for keyboard events
