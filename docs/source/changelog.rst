@@ -54,6 +54,8 @@ Core
 
 * Add faster methods for checking revolute/prismatic joints per dof :meth:`.KinBody.IsDOFRevolute` and :meth:`.KinBody.IsDOFPrismatic`
 
+* Added python bindings to MultiControllerBase interface and took steps toward making it an official interface (thanks to Michael Koval).
+
 Collision Checking
 -----------------
 
@@ -64,12 +66,21 @@ Collision Checking
 C Bindings
 ----------
 
-* Added pure C bindings in the **include/openrave_c** folder with **libopenrave_c** and **libopenrave-core_c** libraries.
+* Added pure C bindings in the **include\/openrave_c** folder with **libopenrave_c** and **libopenrave-core_c** libraries.
+
+C# Bindings
+-----------
+
+* Added C# bindings based on the C bindings (thanks to Jodie Wetherall)
 
 Inverse Kinematics
 ------------------
 
-* IkFast can detect aligned axes and give infinite solutions.
+* **ikfast** can detect aligned axes and give infinite solutions.
+
+* Fixed many bugs in **ikfast** for 6 DOF non-trivial kinematics.
+
+* Added many more degenerate case checking to **ikfast**.
 
 * Fixed bug in ikfastsolver.cpp that prioritizes solutions based on configuration distance.
 

@@ -77,7 +77,7 @@ Grasp set generation:
 
 .. code-block:: bash
 
-  openrave.py --database grasping --robot=robots/kuka-youbot.zae --manipulatordirection="0 1 0" --target=thinbox.kinbody.xml
+  openrave.py --database grasping --robot=robots/kuka-youbot.zae --manipulatordirection="0 1 0" --target=data/thinbox.kinbody.xml
 
 Then execute:
 
@@ -104,7 +104,7 @@ except:
     def cpu_count(): return 1
 
 
-class GraspPlanning:
+class GraspPlanning(openravepy.metaclass.AutoReloader):
     def __init__(self,robot,randomize=True,dests=None,nodestinations=False,switchpatterns=None,plannername=None,minimumgoalpaths=1):
         self.envreal = robot.GetEnv()
         self.robot = robot
@@ -186,6 +186,13 @@ class GraspPlanning:
                     graspables.append([gmodel,dests])
         return graspables
 
+    def GetGraspable(self,name):
+        for graspable in self.graspables:
+            if graspable[0].target.GetName() == name:
+                return graspable
+            
+        return None
+    
     def randomizeObjects(self):
         for graspable in self.graspables:
             target = graspable[0].target
@@ -383,20 +390,21 @@ class GraspPlanning:
             self.waitrobot(robot)
             with env:
                 robot.ReleaseAllGrabbed()
-            if env.CheckCollision(robot):
-                print 'robot in collision, moving back a little'
-                try:
-                    self.basemanip.MoveHandStraight(direction=-dot(gmodel.manip.GetTransform()[0:3,0:3],gmodel.manip.GetDirection()), stepsize=stepsize,minsteps=1,maxsteps=10)
-                    self.waitrobot(robot)
-                except planning_error,e:
-                    pass
+            with CollisionOptionsStateSaver(env.GetCollisionChecker(),CollisionOptions.ActiveDOFs):
                 if env.CheckCollision(robot):
+                    print 'robot in collision, moving back a little'
                     try:
-                        self.taskmanip.ReleaseFingers(target=target,translationstepmult=gmodel.translationstepmult,finestep=gmodel.finestep)
-                    except planning_error:
-                        res = None
-                    #raise ValueError('robot still in collision?')
-
+                        self.basemanip.MoveHandStraight(direction=-dot(gmodel.manip.GetTransform()[0:3,0:3],gmodel.manip.GetDirection()), stepsize=stepsize,minsteps=1,maxsteps=10)
+                        self.waitrobot(robot)
+                    except planning_error,e:
+                        pass
+                    if env.CheckCollision(robot):
+                        try:
+                            self.taskmanip.ReleaseFingers(target=target,translationstepmult=gmodel.translationstepmult,finestep=gmodel.finestep)
+                        except planning_error:
+                            res = None
+                        #raise ValueError('robot still in collision?')
+                    
             if success >= 0:
                 return success # return successful grasp index
             

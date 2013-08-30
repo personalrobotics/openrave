@@ -1044,6 +1044,25 @@ ControllerBasePtr RaveCreateController(EnvironmentBasePtr penv, const std::strin
     return RaveGlobal::instance()->GetDatabase()->CreateController(penv, name);
 }
 
+MultiControllerBasePtr RaveCreateMultiController(EnvironmentBasePtr env, const std::string& rawname)
+{
+    std::string name;
+    if( rawname == "" ) {
+        name = "genericmulticontroller";
+    }
+    else {
+        name = rawname;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    }
+    // TODO remove hack once MultiController is a registered interface
+    ControllerBasePtr pcontroller = RaveGlobal::instance()->GetDatabase()->CreateController(env, name);
+    if( name == "genericmulticontroller" ) {
+        return boost::static_pointer_cast<MultiControllerBase>(pcontroller);
+    }
+    // don't support anything else
+    return MultiControllerBasePtr();
+}
+
 ModuleBasePtr RaveCreateModule(EnvironmentBasePtr penv, const std::string& name)
 {
     return RaveGlobal::instance()->GetDatabase()->CreateModule(penv, name);
@@ -1941,6 +1960,11 @@ bool SensorBase::CameraSensorData::serialize(std::ostream& O) const
 {
     RAVELOG_WARN("CameraSensorData XML serialization not implemented\n");
     return true;
+}
+
+void SensorBase::Serialize(BaseXMLWriterPtr writer, int options) const
+{
+    RAVELOG_WARN(str(boost::format("sensor %s does not implement Serialize")%GetXMLId()));
 }
 
 CollisionOptionsStateSaver::CollisionOptionsStateSaver(CollisionCheckerBasePtr p, int newoptions, bool required)

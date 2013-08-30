@@ -1000,8 +1000,12 @@ void KinBody::SetDOFVelocities(const std::vector<dReal>& vDOFVelocities, const V
             Vector gv = tdelta.rotate(tlocalvelocity.trans*pvalues[0]);
             velocities.at(childindex) = make_pair(vparent + wparent.cross(xyzdelta) + gw.cross(tchild.trans-tdelta.trans) + gv, wparent + gw);
         }
+        else if( pjoint->GetType() == JointSpherical ) {
+            Vector gw = tdelta.rotate(Vector(pvalues[0],pvalues[1],pvalues[2]));
+            velocities.at(childindex) = make_pair(vparent + wparent.cross(xyzdelta) + gw.cross(tchild.trans-tdelta.trans), wparent + gw);
+        }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT("joint %s not supported for querying velocities",pjoint->GetType(),ORE_Assert);
+            throw OPENRAVE_EXCEPTION_FORMAT("joint 0x%x not supported for querying velocities",pjoint->GetType(),ORE_Assert);
 //                //todo
 //                Transform tjoint;
 //                for(int iaxis = 0; iaxis < pjoint->GetDOF(); ++iaxis) {
@@ -2827,7 +2831,7 @@ void KinBody::_ComputeDOFLinkVelocities(std::vector<dReal>& dofvelocities, std::
     }
 }
 
-void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities, const std::vector<dReal>& vDOFAccelerations, const std::vector< std::pair<Vector, Vector> >& vLinkVelocities, std::vector<std::pair<Vector,Vector> >& vLinkAccelerations, AccelerationMapConstPtr externalaccelerations) const
+void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities, const std::vector<dReal>& vDOFAccelerations, const std::vector< std::pair<Vector, Vector> >& vLinkVelocities, std::vector<std::pair<Vector,Vector> >& vLinkAccelerations, AccelerationMapConstPtr pexternalaccelerations) const
 {
     vLinkAccelerations.resize(_veclinks.size());
     if( _veclinks.size() == 0 ) {
@@ -2843,8 +2847,8 @@ void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities
         vLinkAccelerations.at(ilink).second = Vector();
     }
 
-    if( !!externalaccelerations ) {
-        FOREACH(itaccel, *externalaccelerations) {
+    if( !!pexternalaccelerations ) {
+        FOREACHC(itaccel, *pexternalaccelerations) {
             vLinkAccelerations.at(itaccel->first).first += itaccel->second.first;
             vLinkAccelerations.at(itaccel->first).second += itaccel->second.second;
         }

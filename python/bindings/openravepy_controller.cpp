@@ -29,7 +29,7 @@ public:
     virtual ~PyControllerBase() {
     }
 
-    ControllerBasePtr GetController() {
+    ControllerBasePtr GetOpenRAVEController() {
         return _pcontroller;
     }
 
@@ -116,23 +116,71 @@ public:
     }
 };
 
+class PyMultiControllerBase : public PyControllerBase
+{
+private:
+    MultiControllerBasePtr _pmulticontroller;
+
+public:
+    PyMultiControllerBase(MultiControllerBasePtr pmulticontroller, PyEnvironmentBasePtr pyenv) : PyControllerBase(pmulticontroller, pyenv), _pmulticontroller(pmulticontroller) {
+    }
+    virtual ~PyMultiControllerBase() {
+    }
+
+    bool AttachController(PyControllerBasePtr ocontroller, object odofindices, int nControlTransformation) {
+        CHECK_POINTER(ocontroller);
+        vector<int> dofindices = ExtractArray<int>(odofindices);
+        return _pmulticontroller->AttachController(ocontroller->GetOpenRAVEController(), dofindices, nControlTransformation);
+    }
+
+    void RemoveController(PyControllerBasePtr ocontroller) {
+        CHECK_POINTER(ocontroller);
+        _pmulticontroller->RemoveController(ocontroller->GetOpenRAVEController());
+    }
+
+    object GetController(int dof) {
+        CHECK_POINTER(_pmulticontroller);
+        ControllerBasePtr pcontroller = _pmulticontroller->GetController(dof);
+        return object(openravepy::toPyController(pcontroller, _pyenv));
+    }
+};
+
 ControllerBasePtr GetController(PyControllerBasePtr pycontroller)
 {
-    return !pycontroller ? ControllerBasePtr() : pycontroller->GetController();
+    return !pycontroller ? ControllerBasePtr() : pycontroller->GetOpenRAVEController();
 }
 
 PyInterfaceBasePtr toPyController(ControllerBasePtr pcontroller, PyEnvironmentBasePtr pyenv)
 {
-    return !pcontroller ? PyInterfaceBasePtr() : PyInterfaceBasePtr(new PyControllerBase(pcontroller,pyenv));
+    if( !pcontroller )  {
+        return PyInterfaceBasePtr();
+    }
+    // TODO this is a hack
+    // unfortunately dynamic_pointer_cast will not work. The most ideal situation is to have MultiControllerBase registered as its own individual interface....
+    else if( pcontroller->GetXMLId() == std::string("MultiController") ) {
+        return PyInterfaceBasePtr(new PyMultiControllerBase(boost::static_pointer_cast<MultiControllerBase>(pcontroller), pyenv));
+    }
+    else {
+        return PyInterfaceBasePtr(new PyControllerBase(pcontroller, pyenv));
+    }
 }
 
 PyControllerBasePtr RaveCreateController(PyEnvironmentBasePtr pyenv, const std::string& name)
 {
-    ControllerBasePtr p = OpenRAVE::RaveCreateController(GetEnvironment(pyenv), name);
-    if( !p ) {
+    ControllerBasePtr pcontroller = OpenRAVE::RaveCreateController(GetEnvironment(pyenv), name);
+    if( !pcontroller ) {
         return PyControllerBasePtr();
     }
-    return PyControllerBasePtr(new PyControllerBase(p,pyenv));
+    return PyControllerBasePtr(new PyControllerBase(pcontroller, pyenv));
+}
+
+PyMultiControllerBasePtr RaveCreateMultiController(PyEnvironmentBasePtr pyenv, const std::string& name)
+{
+    MultiControllerBasePtr pcontroller = OpenRAVE::RaveCreateMultiController(GetEnvironment(pyenv), name);
+    if( !pcontroller ) {
+        return PyMultiControllerBasePtr();
+    }
+    return PyMultiControllerBasePtr(new PyMultiControllerBase(pcontroller, pyenv));
 }
 
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(Reset_overloads, Reset, 0, 1)
@@ -162,7 +210,16 @@ void init_openravepy_controller()
         ;
     }
 
+    {
+        class_<PyMultiControllerBase, boost::shared_ptr<PyMultiControllerBase>, bases<PyControllerBase, PyInterfaceBase> >("MultiController", DOXY_CLASS(MultiControllerBase), no_init)
+        .def("AttachController",&PyMultiControllerBase::AttachController, args("controller","dofindices","controltransform"), DOXY_FN(MultiControllerBase,AttachController))
+        .def("RemoveController",&PyMultiControllerBase::RemoveController, args("controller"), DOXY_FN(MultiControllerBase,RemoveController))
+        .def("GetController",&PyMultiControllerBase::GetController, args("dof"), DOXY_FN(MultiControllerBase,GetController))
+        ;
+    }
+
     def("RaveCreateController",openravepy::RaveCreateController,args("env","name"),DOXY_FN1(RaveCreateController));
+    def("RaveCreateMultiController",openravepy::RaveCreateMultiController,args("env","name"),DOXY_FN1(RaveCreateMultiController));
 }
 
 }
