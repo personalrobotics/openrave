@@ -149,6 +149,27 @@ public:
         object GetArmIndices() {
             return toPyArray(_pmanip->GetArmIndices());
         }
+        object GetArmDOFValues()
+        {
+            if( _pmanip->GetArmDOF() == 0 ) {
+                return numeric::array(boost::python::list());
+            }
+            vector<dReal> values;
+            _pmanip->GetArmDOFValues(values);
+            return toPyArray(values);
+        }
+        object GetGripperDOFValues()
+        {
+            if( _pmanip->GetGripperDOF() == 0 ) {
+                return numeric::array(boost::python::list());
+            }
+            vector<dReal> values;
+            _pmanip->GetGripperDOFValues(values);
+            return toPyArray(values);
+        }
+        int GetArmDOF() {
+            return _pmanip->GetArmDOF();
+        }
         object GetClosingDirection() {
             return toPyArray(_pmanip->GetClosingDirection());
         }
@@ -1540,6 +1561,9 @@ void init_openravepy_robot()
         .def("GetGripperIndices",&PyRobotBase::PyManipulator::GetGripperIndices, DOXY_FN(RobotBase::Manipulator,GetGripperIndices))
         .def("GetArmJoints",&PyRobotBase::PyManipulator::GetArmJoints, DOXY_FN(RobotBase::Manipulator,GetArmIndices))
         .def("GetArmIndices",&PyRobotBase::PyManipulator::GetArmIndices, DOXY_FN(RobotBase::Manipulator,GetArmIndices))
+        .def("GetArmDOFValues",&PyRobotBase::PyManipulator::GetArmDOFValues, DOXY_FN(RobotBase::Manipulator,GetArmDOFValues))
+        .def("GetGripperDOFValues",&PyRobotBase::PyManipulator::GetGripperDOFValues, DOXY_FN(RobotBase::Manipulator,GetGripperDOFValues))
+        .def("GetArmDOF",&PyRobotBase::PyManipulator::GetArmDOF, DOXY_FN(RobotBase::Manipulator,GetArmDOF))
         .def("GetClosingDirection",&PyRobotBase::PyManipulator::GetClosingDirection, DOXY_FN(RobotBase::Manipulator,GetClosingDirection))
         .def("GetPalmDirection",&PyRobotBase::PyManipulator::GetPalmDirection, DOXY_FN(RobotBase::Manipulator,GetLocalToolDirection))
         .def("GetDirection",&PyRobotBase::PyManipulator::GetDirection, DOXY_FN(RobotBase::Manipulator,GetLocalToolDirection))

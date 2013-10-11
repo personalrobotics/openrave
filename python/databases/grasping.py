@@ -252,8 +252,9 @@ class GraspingModel(DatabaseGenerator):
         self.basemanip = interfaces.BaseManipulation(self.robot,maxvelmult=self.maxvelmult)
         self.grasper = interfaces.Grasper(self.robot,friction=friction,avoidlinks=avoidlinks,plannername=plannername)
         self.grasps = []
-    def load(self):
-        filename = self.getfilename(True)
+    def load(self, filename=None):
+        if filename is None:
+            filename = self.getfilename(True)
         if len(filename) == 0:
             return None
         try:
@@ -300,6 +301,7 @@ class GraspingModel(DatabaseGenerator):
                                 if childjoint.GetFirstAttached() == childlink or childjoint.GetSecondAttached() == childlink:
                                     vertices = r_[vertices,[childjoint.GetAnchor()-joint.GetAnchor()]]
                         self.jointmaxlengths[i] = sqrt(numpy.max(sum(vertices**2,1)-dot(vertices,joint.GetAxis(0))**2)) if len(vertices) > 0 else 0
+                        
     def autogenerateparams(self,options=None):
         friction = None
         preshapes = None
@@ -616,7 +618,7 @@ class GraspingModel(DatabaseGenerator):
                     if options.graspindex is not None:
                         print 'showing grasp %d'%options.graspindex
                         grasps = [self.grasps[options.graspindex]]
-                        delay=10000000
+                        delay=None
                     else:
                         #self.orderGrasps()
                         #self.save()

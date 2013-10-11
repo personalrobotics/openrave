@@ -19,6 +19,9 @@ from ..openravepy_ext import planning_error
 import numpy
 from copy import copy as shallowcopy
 
+import logging
+log = logging.getLogger('openravepy.interfaces.BaseManipulation')
+
 class BaseManipulation:
     """Interface wrapper for :ref:`module-basemanipulation`
     """
@@ -160,7 +163,7 @@ class BaseManipulation:
             return RaveCreateTrajectory(self.prob.GetEnv(),'').deserialize(res)
         return res
 
-    def MoveToHandPosition(self,matrices=None,affinedofs=None,maxiter=None,maxtries=None,translation=None,rotation=None,seedik=None,constraintfreedoms=None,constraintmatrix=None,constrainterrorthresh=None,execute=None,outputtraj=None,steplength=None,goalsamples=None,ikparam=None,ikparams=None,jitter=None,minimumgoalpaths=None,outputtrajobj=None,postprocessing=None,jittergoal=None, constrainttaskmatrix=None, constrainttaskpose=None,goalsampleprob=None,goalmaxsamples=None,goalmaxtries=None):
+    def MoveToHandPosition(self,matrices=None,affinedofs=None,maxiter=None,maxtries=None,translation=None,rotation=None,seedik=None,constraintfreedoms=None,constraintmatrix=None,constrainterrorthresh=None,execute=None,outputtraj=None,steplength=None,goalsamples=None,ikparam=None,ikparams=None,jitter=None,minimumgoalpaths=None,outputtrajobj=None,postprocessing=None,jittergoal=None, constrainttaskmatrix=None, constrainttaskpose=None,goalsampleprob=None,goalmaxsamples=None,goalmaxtries=None,releasegil=False):
         """See :ref:`module-basemanipulation-movetohandposition`
 
         postprocessing is two parameters: (plannername,parmaeters)
@@ -214,7 +217,7 @@ class BaseManipulation:
             cmd += 'goalsampleprob %.15e '%goalsampleprob
         if goalmaxtries is not None:
             cmd += 'goalmaxtries %d '%goalmaxtries
-        res = self.prob.SendCommand(cmd)
+        res = self.prob.SendCommand(cmd, releasegil=releasegil)
         if res is None:
             raise planning_error('MoveToHandPosition')
         if outputtrajobj is not None and outputtrajobj:

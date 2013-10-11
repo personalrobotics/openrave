@@ -13,11 +13,15 @@ __author__ = 'Rosen Diankov'
 __copyright__ = 'Copyright (C) 2009-2011 Rosen Diankov <rosen.diankov@gmail.com>'
 __license__ = 'Apache License, Version 2.0'
 # python 2.5 raises 'import *' not allowed with 'from .'
-from ..openravepy_int import RaveCreateModule, RaveCreateTrajectory, matrixSerialization, IkParameterization, IkParameterization
+from ..openravepy_int import RaveCreateModule, RaveCreateTrajectory, matrixSerialization, IkParameterization, IkParameterization, poseSerialization
 from ..openravepy_ext import planning_error
 
 from numpy import *
 from copy import copy as shallowcopy
+
+import logging
+log = logging.getLogger('openravepy.interfaces.TaskManipulation')
+
 class TaskManipulation:
     """Interface wrapper for :ref:`module-taskmanipulation`
     """
@@ -30,8 +34,11 @@ class TaskManipulation:
             self.args += ' planner ' + plannername
         if maxvelmult is not None:
             self.args += ' maxvelmult %.15e '%maxvelmult
-        if graspername is not None and len(graspername)>0:
-            self.args += ' graspername %s '%graspername
+        if graspername is not None:
+            if len(graspername)>0:
+                self.args += ' graspername %s '%graspername
+            else:
+                self.args += ' nograsper '
         env.Add(self.prob,True,self.args)
     def  __del__(self):
         # need to lock the environment since Remove locks it

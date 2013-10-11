@@ -238,7 +238,7 @@ Some python code to display data::\n\
             _parameters->_nMaxIterations = 10000;
         }
 
-        RAVELOG_DEBUG("BirrtPlanner::InitPlan - RRT Planner Initialized\n");
+        RAVELOG_DEBUG_FORMAT("BiRRT Planner Initialized, initial=%d, goal=%d", _nNumInitialConfigurations%_vecGoals.size());
         return true;
     }
 
@@ -269,7 +269,7 @@ Some python code to display data::\n\
 
         SpatialTreeBase* TreeA = &_treeForward;
         SpatialTreeBase* TreeB = &_treeBackward;
-        int iConnectedA, iConnectedB;
+        int iConnectedA=-1, iConnectedB=-1;
         int iter = 0;
 
         list<GOALPATH> listgoalpaths;
@@ -277,7 +277,7 @@ Some python code to display data::\n\
         PlannerProgress progress;
         PlannerAction callbackaction=PA_None;
         while(listgoalpaths.size() < _parameters->_minimumgoalpaths && iter < 3*_parameters->_nMaxIterations) {
-            RAVELOG_VERBOSE("iter: %d\n", iter);
+            RAVELOG_VERBOSE_FORMAT("iter=%d, Aind=%d, Bind=%d", (iter/3)%iConnectedA%iConnectedB);
             ++iter;
 
             if( !!_parameters->_samplegoalfn ) {
@@ -407,7 +407,7 @@ Some python code to display data::\n\
             ptraj->Init(_parameters->_configurationspecification);
         }
         ptraj->Insert(ptraj->GetNumWaypoints(),itbest->qall,_parameters->_configurationspecification);
-        RAVELOG_DEBUG(str(boost::format("plan success, path=%d points, computation time=%fs\n")%ptraj->GetNumWaypoints()%(0.001f*(float)(utils::GetMilliTime()-basetime))));
+        RAVELOG_DEBUG_FORMAT("plan success, iters=%d, path=%d points, computation time=%fs\n", progress._iteration%ptraj->GetNumWaypoints()%(0.001f*(float)(utils::GetMilliTime()-basetime)));
         return _ProcessPostPlanners(_robot,ptraj);
     }
 

@@ -183,7 +183,12 @@ public:
             for(int i = 0; i < _dof; ++i) {
                 _vDeltaConfig[i] *= fdist;
             }
-            params->_setstatefn(_vNewConfig);
+            if( params->SetStateValues(_vNewConfig) != 0 ) {
+                if(bHasAdded) {
+                    return ET_Sucess;
+                }
+                return ET_Failed;
+            }
             if( !params->_neighstatefn(_vNewConfig,_vDeltaConfig,_fromgoal) ) {
                 if(bHasAdded) {
                     return ET_Sucess;

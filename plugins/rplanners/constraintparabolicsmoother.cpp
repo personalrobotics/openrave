@@ -252,9 +252,9 @@ public:
         uint32_t basetime = utils::GetMilliTime();
 
         ConfigurationSpecification posspec = _parameters->_configurationspecification;
-        _setstatefn = posspec.GetSetFn(GetEnv());
+        //_setstatefn = posspec.GetSetFn(GetEnv());
         ConfigurationSpecification velspec = posspec.ConvertToVelocitySpecification();
-        _setvelstatefn = velspec.GetSetFn(GetEnv());
+        //_setvelstatefn = velspec.GetSetFn(GetEnv());
         ConfigurationSpecification timespec;
         timespec.AddDeltaTimeGroup();
 
@@ -612,11 +612,13 @@ public:
                 std::list<ParabolicRamp::ParabolicRampND> tmpramps0, tmpramps1;
                 bool cansetmilestone = mergewaypoints::ComputeLinearRampsWithConstraints(tmpramps0,x[i],x[i+1],_parameters,check,options);
                 if( !cansetmilestone ) {
-                    string filename = str(boost::format("%s/inittraj%d.xml")%RaveGetHomeDirectory()%(RaveRandomInt()%10000));
-                    RAVELOG_DEBUG_FORMAT("Writing original traj to %s", filename);
-                    ofstream f(filename.c_str());
-                    f << std::setprecision(std::numeric_limits<dReal>::digits10+1);
-                    _inittraj->serialize(f);
+                    if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                        string filename = str(boost::format("%s/inittraj%d.xml")%RaveGetHomeDirectory()%(RaveRandomInt()%10000));
+                        RAVELOG_VERBOSE_FORMAT("Writing original traj to %s", filename);
+                        ofstream f(filename.c_str());
+                        f << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+                        _inittraj->serialize(f);
+                    }
                     throw OPENRAVE_EXCEPTION_FORMAT("linear ramp %d-%d (of %d) failed to pass constraints", i%(i+1)%x.size(), ORE_Assert);
                 }
                 dReal tmpduration = mergewaypoints::ComputeRampsDuration(tmpramps0);
@@ -1090,7 +1092,7 @@ protected:
     RobotBasePtr _probot;
     CollisionCheckerBasePtr _distancechecker;
     ConstraintFilterReturnPtr _constraintreturn;
-    boost::shared_ptr<ConfigurationSpecification::SetConfigurationStateFn> _setstatefn, _setvelstatefn;
+    //boost::shared_ptr<ConfigurationSpecification::SetConfigurationStateFn> _setstatefn, _setvelstatefn;
     //boost::shared_ptr<ConfigurationSpecification::GetConfigurationStateFn> _getstatefn, _getvelstatefn;
     std::vector<dReal> _vtrajpointscache;
 

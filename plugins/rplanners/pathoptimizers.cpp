@@ -21,6 +21,7 @@ public:
     ShortcutLinearPlanner(EnvironmentBasePtr penv, std::istream& sinput) : PlannerBase(penv)
     {
         __description = ":Interface Author: Rosen Diankov\n\npath optimizer using linear shortcuts.";
+        _linearretimer = RaveCreatePlanner(GetEnv(), "LinearTrajectoryRetimer");
     }
     virtual ~ShortcutLinearPlanner() {
     }
@@ -51,7 +52,12 @@ public:
         if( _parameters->_fStepLength <= 0 ) {
             _parameters->_fStepLength = 0.04;
         }
-        return true;
+        _linearretimer->InitPlan(RobotBasePtr(), _parameters);
+        _puniformsampler = RaveCreateSpaceSampler(GetEnv(),"mt19937");
+        if( !!_puniformsampler ) {
+            _puniformsampler->SetSeed(_parameters->_nRandomGeneratorSeed);
+        }
+        return !!_puniformsampler;
     }
 
     virtual PlannerParametersConstPtr GetParameters() const {
@@ -84,8 +90,15 @@ public:
             ptraj->Insert(ptraj->GetNumWaypoints(),it->first);
         }
         RAVELOG_DEBUG(str(boost::format("path optimizing - computation time=%fs\n")%(0.001f*(float)(utils::GetMilliTime()-basetime))));
-        _ProcessPostPlanners(RobotBasePtr(),ptraj);
-        return PS_HasSolution;
+        if( parameters->_sPostProcessingPlanner.size() == 0 ) {
+            // no other planner so at least retime
+            PlannerStatus status = _linearretimer->PlanPath(ptraj);
+            if( status != PS_HasSolution ) {
+                return status;
+            }
+            return PS_HasSolution;
+        }
+        return _ProcessPostPlanners(RobotBasePtr(),ptraj);
     }
 
 protected:
@@ -99,14 +112,14 @@ protected:
 
         int dof = parameters->GetDOF();
         int nrejected = 0;
-        int i = parameters->_nMaxIterations;
+        int iiter = parameters->_nMaxIterations;
         std::vector<dReal> vnewconfig0(dof), vnewconfig1(dof);
-        while(i > 0 && nrejected < (int)listpath.size()+4 && listpath.size() > 2 ) {
-            --i;
+        while(iiter > 0  && nrejected < (int)listpath.size()+4 && listpath.size() > 2 ) {
+            --iiter;
 
             // pick a random node on the listpath, and a random jump ahead
-            int endIndex = 2+(RaveRandomInt()%((int)listpath.size()-2));
-            int startIndex = RaveRandomInt()%(endIndex-1);
+            uint32_t endIndex = 2+(_puniformsampler->SampleSequenceOneUInt32()%((uint32_t)listpath.size()-2));
+            uint32_t startIndex = _puniformsampler->SampleSequenceOneUInt32()%(endIndex-1);
 
             itstartnode = listpath.begin();
             advance(itstartnode, startIndex);
@@ -159,6 +172,7 @@ protected:
 
             if( newtotaldistance > totaldistance-0.1*parameters->_fStepLength ) {
                 // new path is not that good, so reject
+                nrejected++;
                 continue;
             }
 
@@ -180,6 +194,14 @@ protected:
 
             if( listpath.size() <= 2 ) {
                 break;
+            }
+
+            if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                dReal newdistance = 0;
+                FOREACH(ittempnode, listpath) {
+                    newdistance += ittempnode->second;
+                }
+                RAVELOG_VERBOSE_FORMAT("shortcut iter=%d, path=%d, dist=%f", (parameters->_nMaxIterations-iiter)%listpath.size()%newdistance);
             }
         }
     }
@@ -232,7 +254,9 @@ protected:
     }
 
     TrajectoryTimingParametersPtr _parameters;
+    SpaceSamplerBasePtr _puniformsampler;
     RobotBasePtr _probot;
+    PlannerBasePtr _linearretimer;
     ConstraintFilterReturnPtr _filterreturn;
     std::vector<dReal> _vtempdists;
 };

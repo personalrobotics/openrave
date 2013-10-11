@@ -201,7 +201,12 @@ int JitterCurrentConfiguration(PlannerBase::PlannerParametersConstPtr parameters
             }
             newdof = curdof;
             if( !parameters->_neighstatefn(newdof,deltadof,0) ) {
-                parameters->_setstatefn(curdof);
+                int setret = parameters->SetStateValues(curdof, 0);
+                if( setret != 0 ) {
+                    // state failed to set, this could mean the initial state is just really bad, so resume jittering
+                    bCollision = true;
+                    break;
+                }
                 return -1;
             }
         }
@@ -240,7 +245,9 @@ int JitterCurrentConfiguration(PlannerBase::PlannerParametersConstPtr parameters
 
     if( !bCollision || maxjitter <= 0 ) {
         // have to restore to initial non-perturbed configuration!
-        parameters->_setstatefn(curdof);
+        if( parameters->SetStateValues(curdof, 0) != 0 ) {
+            RAVELOG_WARN("failed to restore old values\n");
+        }
         return -1;
     }
 
@@ -282,7 +289,10 @@ int JitterCurrentConfiguration(PlannerBase::PlannerParametersConstPtr parameters
             }
             if( bConstraint ) {
                 newdof = curdof;
-                parameters->_setstatefn(newdof);
+                if( parameters->SetStateValues(newdof, 0) != 0 ) {
+                    bConstraintFailed = true;
+                    break;
+                }
                 if( !parameters->_neighstatefn(newdof,deltadof2,0) ) {
                     if( *itperturbation != 0 ) {
                         RAVELOG_DEBUG(str(boost::format("constraint function failed, pert=%e\n")%*itperturbation));
@@ -326,7 +336,10 @@ int JitterCurrentConfiguration(PlannerBase::PlannerParametersConstPtr parameters
             // have to restore to non-perturbed configuration!
             if( bConstraint ) {
                 newdof = curdof;
-                parameters->_setstatefn(newdof);
+                if( parameters->SetStateValues(newdof, 0) != 0 ) {
+                    // get another state
+                    continue;
+                }
                 if( !parameters->_neighstatefn(newdof,deltadof,0) ) {
                     RAVELOG_WARN("neighstatefn failed, but previously succeeded\n");
                     continue;
@@ -343,7 +356,10 @@ int JitterCurrentConfiguration(PlannerBase::PlannerParametersConstPtr parameters
                     }
                 }
             }
-            parameters->_setstatefn(newdof);
+            if( parameters->SetStateValues(newdof, 0) != 0 ) {
+                // get another state
+                continue;
+            }
             if( IS_DEBUGLEVEL(Level_Verbose) ) {
                 parameters->_getstatefn(newdof);
                 stringstream ss; ss << std::setprecision(std::numeric_limits<OpenRAVE::dReal>::digits10+1);
@@ -410,7 +426,9 @@ public:
                     throw OPENRAVE_EXCEPTION_FORMAT("velocity exceeded configuration %d dof %d: %f>%f", ipoint%i%RaveFabs(vdatavel.at(i))%_parameters->_vConfigVelocityLimit[i], ORE_InconsistentConstraints);
                 }
             }
-            _parameters->_setstatefn(vdata);
+            if( _parameters->SetStateValues(vdata, 0) != 0 ) {
+                throw OPENRAVE_EXCEPTION_FORMAT0("failed to set state values", ORE_InconsistentConstraints);
+            }
             vector<dReal> newq;
             _parameters->_getstatefn(newq);
             BOOST_ASSERT(vdata.size() == newq.size());
@@ -471,6 +489,9 @@ public:
                         OPENRAVE_ASSERT_OP_FORMAT(RaveFabs(vdiff.at(i)), <=, velthresh, "time %fs-%fs, dof %d traveled %f, but maxvelocity only allows %f, wrote trajectory to %s",*itprevtime%*itsampletime%i%RaveFabs(vdiff.at(i))%velthresh%DumpTrajectory(trajectory),ORE_InconsistentConstraints);
                     }
                     if( _parameters->CheckPathAllConstraints(vprevdata,vdata,vprevdatavel, vdatavel, deltatime, IT_Closed, 0xffff|CFO_FillCheckedConfiguration, filterreturn) != 0 ) {
+                        if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                            _parameters->CheckPathAllConstraints(vprevdata,vdata,vprevdatavel, vdatavel, deltatime, IT_Closed, 0xffff|CFO_FillCheckedConfiguration, filterreturn);
+                        }
                         throw OPENRAVE_EXCEPTION_FORMAT("time %fs-%fs, CheckPathAllConstraints failed, wrote trajectory to %s",*itprevtime%*itsampletime%DumpTrajectory(trajectory),ORE_InconsistentConstraints);
                     }
                     OPENRAVE_ASSERT_OP(filterreturn->_configurations.size()%_parameters->GetDOF(),==,0);
@@ -482,7 +503,9 @@ public:
                         for(int i = 0; i < _parameters->GetDOF(); ++i) {
                             deltaq.at(i) = vcurconfig.at(i) - vprevconfig.at(i);
                         }
-                        _parameters->_setstatefn(vprevconfig);
+                        if( _parameters->SetStateValues(vprevconfig, 0) != 0 ) {
+                            throw OPENRAVE_EXCEPTION_FORMAT0("time %fs-%fs, failed to set state values", ORE_InconsistentConstraints);
+                        }
                         vector<dReal> vtemp = vprevconfig;
                         if( !_parameters->_neighstatefn(vtemp,deltaq,0) ) {
                             throw OPENRAVE_EXCEPTION_FORMAT("time %fs-%fs, neighstatefn is rejecting configurations from CheckPathAllConstraints, wrote trajectory to %s",*itprevtime%*itsampletime%DumpTrajectory(trajectory),ORE_InconsistentConstraints);
@@ -563,6 +586,7 @@ PlannerStatus _PlanActiveDOFTrajectory(TrajectoryBasePtr traj, RobotBasePtr prob
         *it *= fmaxaccelmult;
     }
     if( !bsmooth ) {
+        params->_setstatevaluesfn.clear();
         params->_setstatefn.clear();
         params->_checkpathconstraintsfn.clear();
         params->_checkpathvelocityconstraintsfn.clear();
@@ -637,6 +661,7 @@ ActiveDOFTrajectoryRetimer::ActiveDOFTrajectoryRetimer(RobotBasePtr robot, const
     params->SetRobotActiveJoints(_robot);
     params->_sPostProcessingPlanner = ""; // have to turn off the second post processing stage
     params->_hastimestamps = false;
+    params->_setstatevaluesfn.clear();
     params->_setstatefn.clear();
     params->_checkpathconstraintsfn.clear();
     params->_checkpathvelocityconstraintsfn.clear();
@@ -695,6 +720,7 @@ PlannerStatus _PlanTrajectory(TrajectoryBasePtr traj, bool hastimestamps, dReal 
         *it *= fmaxaccelmult;
     }
     if( !bsmooth ) {
+        params->_setstatevaluesfn.clear();
         params->_setstatefn.clear();
         params->_checkpathconstraintsfn.clear();
         params->_checkpathvelocityconstraintsfn.clear();
@@ -752,11 +778,12 @@ static dReal _ComputeTransformBodyDistance(std::vector<dReal>::const_iterator it
     return TransformDistance2(t0, t1, 0.3);
 }
 
-void _SetAffineState(const std::vector<dReal>& v, const std::list< boost::function< void(std::vector<dReal>::const_iterator) > >& listsetfunctions)
+int _SetAffineState(const std::list< boost::function< void(std::vector<dReal>::const_iterator) > >& listsetfunctions, const std::vector<dReal>& v, int options)
 {
     FOREACHC(itfn,listsetfunctions) {
         (*itfn)(v.begin());
     }
+    return 0;
 }
 
 void _GetAffineState(std::vector<dReal>& v, size_t expectedsize, const std::list< boost::function< void(std::vector<dReal>::iterator) > >& listgetfunctions)
@@ -779,17 +806,20 @@ dReal _ComputeAffineDistanceMetric(const std::vector<dReal>& v0, const std::vect
 class PlannerStateSaver
 {
 public:
-    PlannerStateSaver(int dof, const PlannerBase::PlannerParameters::SetStateFn& setfn, const PlannerBase::PlannerParameters::GetStateFn& getfn) : _setfn(setfn) {
+    PlannerStateSaver(int dof, const PlannerBase::PlannerParameters::SetStateValuesFn& setfn, const PlannerBase::PlannerParameters::GetStateFn& getfn) : _setfn(setfn) {
         _savedvalues.resize(dof);
         getfn(_savedvalues);
         BOOST_ASSERT(!!_setfn);
     }
     virtual ~PlannerStateSaver() {
-        _setfn(_savedvalues);
+        int ret = _setfn(_savedvalues, 0);
+        if( ret != 0 ) {
+            throw OPENRAVE_EXCEPTION_FORMAT("failed to set state in PlannerStateSaver, return=%d", ret, ORE_Assert);
+        }
     }
 
 private:
-    const PlannerBase::PlannerParameters::SetStateFn& _setfn;
+    const PlannerBase::PlannerParameters::SetStateValuesFn& _setfn;
     vector<dReal> _savedvalues;
 };
 
@@ -877,16 +907,17 @@ static PlannerStatus _PlanAffineTrajectory(TrajectoryBasePtr traj, const std::ve
     boost::shared_ptr<PlannerStateSaver> statesaver;
     if( bsmooth ) {
         if( listsetfunctions.size() > 0 ) {
-            params->_setstatefn = boost::bind(_SetAffineState,_1,boost::ref(listsetfunctions));
+            params->_setstatevaluesfn = boost::bind(_SetAffineState,boost::ref(listsetfunctions), _1, _2);
             params->_getstatefn = boost::bind(_GetAffineState,_1,params->GetDOF(), boost::ref(listgetfunctions));
             params->_distmetricfn = boost::bind(_ComputeAffineDistanceMetric,_1,_2,boost::ref(listdistfunctions));
             std::list<KinBodyPtr> listCheckCollisions; listCheckCollisions.push_back(robot);
             boost::shared_ptr<DynamicsCollisionConstraint> pcollision(new DynamicsCollisionConstraint(params, listCheckCollisions, 0xffffffff&~CFO_CheckTimeBasedConstraints));
             params->_checkpathvelocityconstraintsfn = boost::bind(&DynamicsCollisionConstraint::Check,pcollision,_1, _2, _3, _4, _5, _6, _7, _8);
-            statesaver.reset(new PlannerStateSaver(newspec.GetDOF(), params->_setstatefn, params->_getstatefn));
+            statesaver.reset(new PlannerStateSaver(newspec.GetDOF(), params->_setstatevaluesfn, params->_getstatefn));
         }
     }
     else {
+        params->_setstatevaluesfn.clear();
         params->_setstatefn.clear();
         params->_getstatefn.clear();
         params->_checkpathconstraintsfn.clear();
@@ -968,6 +999,7 @@ PlannerStatus AffineTrajectoryRetimer::PlanPath(TrajectoryBasePtr traj, const st
     if( !_parameters ) {
         parameters.reset(new TrajectoryTimingParameters());
         parameters->_sPostProcessingPlanner = ""; // have to turn off the second post processing stage
+        parameters->_setstatevaluesfn.clear();
         parameters->_setstatefn.clear();
         parameters->_getstatefn.clear();
         parameters->_checkpathconstraintsfn.clear();
@@ -1853,7 +1885,9 @@ void DynamicsCollisionConstraint::SetPerturbation(dReal perturbation)
 
 int DynamicsCollisionConstraint::_SetAndCheckState(PlannerBase::PlannerParametersPtr params, const std::vector<dReal>& vdofvalues, const std::vector<dReal>& vdofvelocities, const std::vector<dReal>& vdofaccels, int options, ConstraintFilterReturnPtr filterreturn)
 {
-    params->_setstatefn(vdofvalues);
+    if( params->SetStateValues(vdofvalues, 0) != 0 ) {
+        return CFO_StateSettingError;
+    }
     if( (options & CFO_CheckTimeBasedConstraints) && !!_setvelstatefn && vdofvelocities.size() == vdofvalues.size() ) {
         (*_setvelstatefn)(vdofvelocities);
     }
@@ -1875,7 +1909,9 @@ int DynamicsCollisionConstraint::_SetAndCheckState(PlannerBase::PlannerParameter
                     _vperturbedvalues[i] = params->_vConfigUpperLimit.at(i);
                 }
             }
-            params->_setstatefn(_vperturbedvalues);
+            if( params->SetStateValues(_vperturbedvalues, 0) != 0 ) {
+                return CFO_StateSettingError|CFO_CheckWithPerturbation;
+            }
             int nstateret = _CheckState(vdofaccels, options, filterreturn);
             if( nstateret != 0 ) {
                 return nstateret;
@@ -1982,9 +2018,9 @@ int DynamicsCollisionConstraint::Check(const std::vector<dReal>& q0, const std::
     if( !params ) {
         RAVELOG_WARN("parameters have been destroyed!\n");
         if( !!filterreturn ) {
-            filterreturn->_returncode = 0x80000000;
+            filterreturn->_returncode = CFO_StateSettingError;
         }
-        return 0x80000000;
+        return CFO_StateSettingError;
     }
     BOOST_ASSERT(_listCheckBodies.size()>0);
     int start=0;
@@ -2156,7 +2192,7 @@ int DynamicsCollisionConstraint::Check(const std::vector<dReal>& q0, const std::
                 }
                 if( !bfound ) {
                     RAVELOG_WARN("cannot take root for quadratic interpolation\n");
-                    return 0x80000000;
+                    return CFO_StateSettingError;
                 }
             }
 
@@ -2173,7 +2209,7 @@ int DynamicsCollisionConstraint::Check(const std::vector<dReal>& q0, const std::
             }
 
             if( !params->_neighstatefn(_vtempconfig, dQ,0) ) {
-                return 0x80000000;
+                return CFO_StateSettingError;
             }
         }
     }
@@ -2191,7 +2227,7 @@ int DynamicsCollisionConstraint::Check(const std::vector<dReal>& q0, const std::
 
         if( start > 0 ) {
             if( !params->_neighstatefn(_vtempconfig, dQ,0) ) {
-                return 0x80000000;
+                return CFO_StateSettingError;
             }
             for(size_t i = 0; i < _vtempveldelta.size(); ++i) {
                 _vtempvelconfig.at(i) += _vtempveldelta[i];
@@ -2217,7 +2253,7 @@ int DynamicsCollisionConstraint::Check(const std::vector<dReal>& q0, const std::
             }
 
             if( !params->_neighstatefn(_vtempconfig,dQ,0) ) {
-                return 0x80000000;
+                return CFO_StateSettingError;
             }
             for(size_t i = 0; i < _vtempveldelta.size(); ++i) {
                 _vtempvelconfig.at(i) += _vtempveldelta[i];

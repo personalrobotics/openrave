@@ -816,7 +816,16 @@ public:
 
     object GetKinBody(const string &name)
     {
-        return object(openravepy::toPyKinBody(_penv->GetKinBody(name),shared_from_this()));
+        KinBodyPtr pbody = _penv->GetKinBody(name);
+        if( !pbody ) {
+            return object();
+        }
+        if( pbody->IsRobot() ) {
+            return object(openravepy::toPyRobot(RaveInterfaceCast<RobotBase>(pbody),shared_from_this()));
+        }
+        else {
+            return object(openravepy::toPyKinBody(pbody,shared_from_this()));
+        }
     }
     object GetRobot(const string &name)
     {
@@ -1197,7 +1206,6 @@ public:
         _penv->GetBodies(vbodies);
         boost::python::list bodies;
         FOREACHC(itbody, vbodies) {
-
             if( (*itbody)->IsRobot() ) {
                 bodies.append(openravepy::toPyRobot(RaveInterfaceCast<RobotBase>(*itbody),shared_from_this()));
             }

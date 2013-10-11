@@ -197,6 +197,7 @@ class InverseKinematicsModel(DatabaseGenerator):
                     geom.SetDraw(isdraw)
                     geom.SetTransparency(tr)
 
+    _cachedKinematicsHash = None # manip.GetKinematicsStructureHash() when the ik was built with
     def __init__(self,robot=None,iktype=None,forceikfast=False,freeindices=None,freejoints=None,manip=None):
         """
         :param robot: if not None, will use the robot's active manipulator
@@ -244,13 +245,19 @@ class InverseKinematicsModel(DatabaseGenerator):
         self.forceikfast = forceikfast
         self.ikfeasibility = None # if not None, ik is NOT feasibile and contains the error message
         self.statistics = dict()
-
+        
     def  __del__(self):
         if self.ikfastproblem is not None:
-            try:
-                self.env.Remove(self.ikfastproblem)
-            except openrave_exception, e:
-                log.debug('__del__ %s',e)
+            # need to lock the environment since Remove locks it
+            if self.env.Lock(1.0):
+                try:
+                    self.env.Remove(self.ikfastproblem)
+                finally:
+                    self.env.Unlock()
+            else:
+                log.warn('failed to lock environment for InverseKinematicsModel.__del__!')
+        DatabaseGenerator.__del__(self)
+        
     def clone(self,envother):
         clone = DatabaseGenerator.clone(self,envother)
         clone.ikfastproblem = RaveCreateModule(envother,'ikfast')
@@ -259,6 +266,7 @@ class InverseKinematicsModel(DatabaseGenerator):
         if self.has():
             clone.setrobot(self.freeinc)
         return clone
+    
     def has(self):
         return self.iksolver is not None and self.manip.GetIkSolver() is not None and self.manip.GetIkSolver().Supports(self.iktype)
     
@@ -897,6 +905,8 @@ class InverseKinematicsModel(DatabaseGenerator):
                             pass
             else:
                 log.warn('cannot continue further if outputlang %s is not cpp',outputlang)
+                
+        self._cachedKinematicsHash = self.manip.GetKinematicsStructureHash()
         
     def perftiming(self,num):
         with self.env:

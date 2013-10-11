@@ -430,6 +430,9 @@ public:
         vector<int> vindices = ExtractArray<int>(oindices);
         std::vector<dReal> vdata = ExtractArray<dReal>(odata);
         std::vector<dReal> vvalues = ExtractArray<dReal>(ovalues);
+        OPENRAVE_ASSERT_OP(vvalues.size(),==,vindices.size());
+        OPENRAVE_ASSERT_OP(vdata.size(),>=,vvalues.size());
+        OPENRAVE_ASSERT_OP(vdata.size(),==,_spec.GetDOF());
         if( !_spec.InsertJointValues(vdata.begin(), vvalues.begin(), openravepy::GetKinBody(pybody), vindices, timederivative) ) {
             return false;
         }
@@ -458,7 +461,12 @@ public:
         _spec.ExtractUsedBodies(openravepy::GetEnvironment(pyenv), vusedbodies);
         boost::python::list obodies;
         FOREACHC(itbody, vusedbodies) {
-            obodies.append(openravepy::toPyKinBody(*itbody, pyenv));
+            if( (*itbody)->IsRobot() ) {
+                obodies.append(openravepy::toPyRobot(RaveInterfaceCast<RobotBase>(*itbody), pyenv));
+            }
+            else {
+                obodies.append(openravepy::toPyKinBody(*itbody, pyenv));
+            }
         }
         return obodies;
     }
@@ -474,6 +482,15 @@ public:
 //    static void ConvertGroupData(std::vector<dReal>::iterator ittargetdata, size_t targetstride, const Group& gtarget, std::vector<dReal>::const_iterator itsourcedata, size_t sourcestride, const Group& gsource, size_t numpoints, EnvironmentBaseConstPtr penv);
 //
 //    static void ConvertData(std::vector<dReal>::iterator ittargetdata, const ConfigurationSpecification& targetspec, std::vector<dReal>::const_iterator itsourcedata, const ConfigurationSpecification& sourcespec, size_t numpoints, EnvironmentBaseConstPtr penv, bool filluninitialized = true);
+
+    boost::python::list GetGroups()
+    {
+        boost::python::list ogroups;
+        FOREACHC(itgroup, _spec._vgroups) {
+            ogroups.append(*itgroup);
+        }
+        return ogroups;
+    }
 
     bool __eq__(PyConfigurationSpecificationPtr p) {
         return !!p && _spec==p->_spec;
@@ -1095,6 +1112,7 @@ void init_openravepy_global()
                                            .def("InsertJointValues",&PyConfigurationSpecification::InsertJointValues,args("data","values","body","indices","timederivative"),DOXY_FN(ConfigurationSpecification,InsertJointValues))
                                            .def("ExtractUsedBodies", &PyConfigurationSpecification::ExtractUsedBodies, args("env"), DOXY_FN(ConfigurationSpecification, ExtractUsedBodies))
                                            .def("ExtractUsedIndices", &PyConfigurationSpecification::ExtractUsedIndices, args("env"), DOXY_FN(ConfigurationSpecification, ExtractUsedIndices))
+                                           .def("GetGroups", &PyConfigurationSpecification::GetGroups, args("env"), "returns a list of the groups")
                                            .def("__eq__",&PyConfigurationSpecification::__eq__)
                                            .def("__ne__",&PyConfigurationSpecification::__ne__)
                                            .def("__add__",&PyConfigurationSpecification::__add__)

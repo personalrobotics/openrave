@@ -1755,14 +1755,28 @@ object PyKinBody::GetLinkVelocities() const
     return static_cast<numeric::array>(handle<>(pyvel));
 }
 
-object PyKinBody::GetLinkAccelerations(object odofaccelerations) const
+object PyKinBody::GetLinkAccelerations(object odofaccelerations, object oexternalaccelerations=object()) const
 {
     if( _pbody->GetLinks().size() == 0 ) {
         return numeric::array(boost::python::list());
     }
     vector<dReal> vDOFAccelerations = ExtractArray<dReal>(odofaccelerations);
+    KinBody::AccelerationMapPtr pmapExternalAccelerations;
+    if( !(oexternalaccelerations == object()) ) {
+        //externalaccelerations
+        pmapExternalAccelerations.reset(new KinBody::AccelerationMap());
+        boost::python::dict odict = (boost::python::dict)oexternalaccelerations;
+        boost::python::list iterkeys = (boost::python::list)odict.iterkeys();
+        vector<dReal> v;
+        for (int i = 0; i < boost::python::len(iterkeys); i++) {
+            int linkindex = boost::python::extract<int>(iterkeys[i]);
+            object olinkaccelerations = odict[iterkeys[i]];
+            OPENRAVE_ASSERT_OP(len(olinkaccelerations),==,6);
+            (*pmapExternalAccelerations)[linkindex] = make_pair(Vector(boost::python::extract<dReal>(olinkaccelerations[0]),boost::python::extract<dReal>(olinkaccelerations[1]),boost::python::extract<dReal>(olinkaccelerations[2])),Vector(boost::python::extract<dReal>(olinkaccelerations[3]),boost::python::extract<dReal>(olinkaccelerations[4]),boost::python::extract<dReal>(olinkaccelerations[5])));
+        }
+    }
     std::vector<std::pair<Vector,Vector> > vLinkAccelerations;
-    _pbody->GetLinkAccelerations(vDOFAccelerations,vLinkAccelerations);
+    _pbody->GetLinkAccelerations(vDOFAccelerations, vLinkAccelerations, pmapExternalAccelerations);
 
     npy_intp dims[] = { vLinkAccelerations.size(),6};
     PyObject *pyaccel = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
@@ -1921,13 +1935,22 @@ void PyKinBody::SetDOFValues(object o, object indices)
     SetDOFValues(o,indices,KinBody::CLA_CheckLimits);
 }
 
-object PyKinBody::SubtractDOFValues(object ovalues0, object ovalues1)
+object PyKinBody::SubtractDOFValues(object ovalues0, object ovalues1, object oindices)
 {
     vector<dReal> values0 = ExtractArray<dReal>(ovalues0);
     vector<dReal> values1 = ExtractArray<dReal>(ovalues1);
-    BOOST_ASSERT((int)values0.size() == GetDOF() );
-    BOOST_ASSERT((int)values1.size() == GetDOF() );
-    _pbody->SubtractDOFValues(values0,values1);
+    vector<int> vindices;
+    if( oindices == object() ) {
+        OPENRAVE_ASSERT_OP((int)values0.size(), ==, GetDOF());
+        OPENRAVE_ASSERT_OP((int)values1.size(), ==, GetDOF());
+        _pbody->SubtractDOFValues(values0,values1);
+    }
+    else {
+        vindices = ExtractArray<int>(oindices);
+        OPENRAVE_ASSERT_OP(values0.size(), ==, vindices.size());
+        OPENRAVE_ASSERT_OP(values1.size(), ==, vindices.size());
+        _pbody->SubtractDOFValues(values0,values1,vindices);
+    }
     return toPyArray(values0);
 }
 
@@ -2455,6 +2478,7 @@ BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetMaxAccel_overloads, GetMaxAccel, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetMaxTorque_overloads, GetMaxTorque, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetLinkTransformations_overloads, GetLinkTransformations, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetLinkTransformations_overloads, SetLinkTransformations, 1, 2)
+BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SubtractDOFValues_overloads, SubtractDOFValues, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ComputeJacobianTranslation_overloads, ComputeJacobianTranslation, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ComputeJacobianAxisAngle_overloads, ComputeJacobianAxisAngle, 1, 2)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ComputeHessianTranslation_overloads, ComputeHessianTranslation, 2, 3)
@@ -2467,6 +2491,7 @@ BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetFloatParameters_overloads, GetFloatPar
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetIntParameters_overloads, GetIntParameters, 0, 2)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetStringParameters_overloads, GetStringParameters, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(CheckSelfCollision_overloads, CheckSelfCollision, 0, 2)
+BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetLinkAccelerations_overloads, GetLinkAccelerations, 1, 2)
 
 void init_openravepy_kinbody()
 {
@@ -2580,7 +2605,7 @@ void init_openravepy_kinbody()
                         .def("SetDOFVelocities",setdofvelocities3, args("dofvelocities","checklimits","indices"), DOXY_FN(KinBody,SetDOFVelocities "const std::vector; uint32_t; const std::vector"))
                         .def("SetDOFVelocities",setdofvelocities4, args("dofvelocities","linear","angular","checklimits"), DOXY_FN(KinBody,SetDOFVelocities "const std::vector; const Vector; const Vector; uint32_t"))
                         .def("GetLinkVelocities",&PyKinBody::GetLinkVelocities, DOXY_FN(KinBody,GetLinkVelocities))
-                        .def("GetLinkAccelerations",&PyKinBody::GetLinkAccelerations, DOXY_FN(KinBody,GetLinkAccelerations))
+                        .def("GetLinkAccelerations",&PyKinBody::GetLinkAccelerations, GetLinkAccelerations_overloads(args("dofaccelerations", "externalaccelerations"), DOXY_FN(KinBody,GetLinkAccelerations)))
                         .def("GetLinkEnableStates",&PyKinBody::GetLinkEnableStates, DOXY_FN(KinBody,GetLinkEnableStates))
                         .def("SetLinkEnableStates",&PyKinBody::SetLinkEnableStates, DOXY_FN(KinBody,SetLinkEnableStates))
                         .def("ComputeAABB",&PyKinBody::ComputeAABB, DOXY_FN(KinBody,ComputeAABB))
@@ -2596,7 +2621,7 @@ void init_openravepy_kinbody()
                         .def("SetDOFValues",psetdofvalues1,args("values"), DOXY_FN(KinBody,SetDOFValues "const std::vector; uint32_t; const std::vector"))
                         .def("SetDOFValues",psetdofvalues2,args("values","dofindices"), DOXY_FN(KinBody,SetDOFValues "const std::vector; uint32_t; const std::vector"))
                         .def("SetDOFValues",psetdofvalues3,args("values","dofindices","checklimits"), DOXY_FN(KinBody,SetDOFValues "const std::vector; uint32_t; const std::vector"))
-                        .def("SubtractDOFValues",&PyKinBody::SubtractDOFValues,args("values0","values1"), DOXY_FN(KinBody,SubtractDOFValues))
+                        .def("SubtractDOFValues",&PyKinBody::SubtractDOFValues,SubtractDOFValues_overloads(args("values0","values1"), DOXY_FN(KinBody,SubtractDOFValues)))
                         .def("SetDOFTorques",&PyKinBody::SetDOFTorques,args("torques","add"), DOXY_FN(KinBody,SetDOFTorques))
                         .def("SetJointTorques",&PyKinBody::SetDOFTorques,args("torques","add"), DOXY_FN(KinBody,SetDOFTorques))
                         .def("SetTransformWithJointValues",&PyKinBody::SetTransformWithDOFValues,args("transform","values"), DOXY_FN(KinBody,SetDOFValues "const std::vector; const Transform; uint32_t"))
