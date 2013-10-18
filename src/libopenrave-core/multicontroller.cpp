@@ -21,6 +21,7 @@ class MultiController : public MultiControllerBase
 {
 public:
     MultiController(EnvironmentBasePtr penv) : MultiControllerBase(penv), _nControlTransformation(0) {
+
     }
 
     virtual ~MultiController() {
@@ -139,18 +140,13 @@ public:
 
     virtual bool SetPath(TrajectoryBaseConstPtr ptraj)
     {
+
         boost::mutex::scoped_lock lock(_mutex);
         bool bsuccess = true;
-        if( !ptraj ) {
-            FOREACH(itcontroller,_listcontrollers) {
-                bsuccess &= (*itcontroller)->SetPath(TrajectoryBaseConstPtr());
-            }
+        FOREACH(itcontroller,_listcontrollers) {
+            bsuccess &= (*itcontroller)->SetPath(ptraj);
         }
-        else {
-            if( !_ptraj ||(_ptraj->GetXMLId() != ptraj->GetXMLId())) {
-                _ptraj = RaveCreateTrajectory(ptraj->GetEnv(),ptraj->GetXMLId());
-            }
-        }
+        
         return bsuccess;
     }
 
