@@ -166,7 +166,7 @@ void KinBodyItem::Load()
                     extension = geom->GetRenderFilename().substr(geom->GetRenderFilename().find_last_of('.')+1);
                     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
                 }
-                if( extension == "wrl" || extension == "iv" || extension == "vrml" ) {
+                if( extension == "wrl" || extension == "iv" || extension == "vrml" || extension == "stl" ) {
                     if( mySceneInput.openFile(geom->GetRenderFilename().c_str()) ) {
                         psep = SoDB::readAll(&mySceneInput);
                         if( !!psep ) {
