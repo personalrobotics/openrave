@@ -21,7 +21,6 @@ class MultiController : public MultiControllerBase
 {
 public:
     MultiController(EnvironmentBasePtr penv) : MultiControllerBase(penv), _nControlTransformation(0) {
-
     }
 
     virtual ~MultiController() {
@@ -140,13 +139,11 @@ public:
 
     virtual bool SetPath(TrajectoryBaseConstPtr ptraj)
     {
-
         boost::mutex::scoped_lock lock(_mutex);
         bool bsuccess = true;
         FOREACH(itcontroller,_listcontrollers) {
             bsuccess &= (*itcontroller)->SetPath(ptraj);
         }
-        
         return bsuccess;
     }
 
