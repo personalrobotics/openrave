@@ -87,8 +87,9 @@ public:
         \param sample the values of the samples. This is a num*GetNumberOfValues() array.
         \param num number of samples to return
         \param interval the sampling intervel for each of the dimensions.
+        \return the number of samples completed or an error code. Error codes are <= 0.
      */
-    virtual void SampleSequence(std::vector<dReal>& samples, size_t num=1,IntervalType interval=IT_Closed) OPENRAVE_DUMMY_IMPLEMENTATION;
+    virtual int SampleSequence(std::vector<dReal>& samples, size_t num=1,IntervalType interval=IT_Closed) OPENRAVE_DUMMY_IMPLEMENTATION;
 
     /// \brief samples the real next value on the sequence, only valid for 1 DOF sequences.
     ///
@@ -107,8 +108,9 @@ public:
         The sampler can fail by returning an array of size 0.
         \param sample the values of the samples. This is a num*GetNumberOfValues() array.
         \param num number of samples to return
+        \return the number of samples completed or an error code. Error codes are <= 0.
      */
-    virtual void SampleSequence(std::vector<uint32_t>& sample, size_t num=1) OPENRAVE_DUMMY_IMPLEMENTATION;
+    virtual int SampleSequence(std::vector<uint32_t>& sample, size_t num=1) OPENRAVE_DUMMY_IMPLEMENTATION;
 
     /// \brief samples the unsigned integer next value on the sequence, only valid for 1 DOF sequences.
     ///
@@ -125,21 +127,50 @@ public:
     /// \brief returns N samples that best approximate the entire sampling space.
     ///
     /// The sampler can fail by returning an array of size 0.
-    virtual void SampleComplete(std::vector<dReal>& samples, size_t num,IntervalType interval=IT_Closed) OPENRAVE_DUMMY_IMPLEMENTATION;
+    /// \return the number of samples completed or an error code. Error codes are <= 0.
+    virtual int SampleComplete(std::vector<dReal>& samples, size_t num,IntervalType interval=IT_Closed) OPENRAVE_DUMMY_IMPLEMENTATION;
 
     /// \brief returns N samples that best approximate the entire sampling space.
     ///
     /// The sampler can fail by returning an array of size 0.
-    virtual void SampleComplete(std::vector<uint32_t>& samples, size_t num) OPENRAVE_DUMMY_IMPLEMENTATION;
+    /// \return the number of samples completed or an error code. Error codes are <= 0.
+    virtual int SampleComplete(std::vector<uint32_t>& samples, size_t num) OPENRAVE_DUMMY_IMPLEMENTATION;
 
     /// \brief Sets a distance metric for measuring samples. Used when computing neighborhood sampling
     //virtual void SetDistanceMetric(const boost::function<dReal(const std::vector<dReal>&, const std::vector<dReal>&)>& distmetricfn) OPENRAVE_DUMMY_IMPLEMENTATION;
 
+    /** \brief Callback function during sampling
 
+        \param sampleiteration the sampling iteration of the planner (shows how far the planner has gone)
+        \return return value can be processed by the sampler to modify its behavior. the meaning is user defined.
+     */
+    typedef boost::function<int(int)> StatusCallbackFn;
+    
+    /** \brief register a function that is called periodically during sampling
+        
+        Callback can be used to periodically send status messages from the sampler's thread. It can also throw an exception to "cancel" the sampler if it takes too long.
+     */
+    virtual UserDataPtr RegisterStatusCallback(const StatusCallbackFn& callbackfn);
+
+protected:
+    inline SpaceSamplerBasePtr shared_sampler() {
+        return boost::static_pointer_cast<SpaceSamplerBase>(shared_from_this());
+    }
+    inline SpaceSamplerBaseConstPtr shared_sampler_const() const {
+        return boost::static_pointer_cast<SpaceSamplerBase const>(shared_from_this());
+    }
+
+    /// \brief Calls the registered callbacks in order, returns the bitwise OR of all the functions.
+    virtual int _CallStatusFunctions(int sampleiteration);
+    
 private:
     virtual const char* GetHash() const {
         return OPENRAVE_SPACESAMPLER_HASH;
     }
+    
+    std::list<UserDataWeakPtr> __listRegisteredCallbacks; ///< internally managed callbacks
+    
+    friend class CustomSamplerCallbackData;
 };
 
 } // end namespace OpenRAVE

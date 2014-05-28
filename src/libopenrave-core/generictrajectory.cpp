@@ -22,7 +22,7 @@
 namespace OpenRAVE {
 
 static const dReal g_fEpsilonLinear = RavePow(g_fEpsilon,0.9);
-static const dReal g_fEpsilonQuadratic = RavePow(g_fEpsilon,0.5); // should be 0.6...perhaps this is related to parabolic smoother epsilons?
+static const dReal g_fEpsilonQuadratic = RavePow(g_fEpsilon,0.45); // should be 0.6...perhaps this is related to parabolic smoother epsilons?
 
 class GenericTrajectory : public TrajectoryBase
 {
@@ -74,6 +74,7 @@ public:
             _vgroupinterpolators.resize(0);
             _vgroupvalidators.resize(0);
             _vderivoffsets.resize(0);
+            _vintegraloffsets.resize(0);
             _spec = spec;
             // order the groups based on computation order
             stable_sort(_spec._vgroups.begin(),_spec._vgroups.end(),boost::bind(&GenericTrajectory::SortGroups,this,_1,_2));
@@ -173,7 +174,9 @@ public:
         BOOST_ASSERT(_timeoffset>=0);
         BOOST_ASSERT(time >= 0);
         _ComputeInternal();
-        _VerifySampling();
+        if( IS_DEBUGLEVEL(Level_Verbose) || (RaveGetDebugLevel() & Level_VerifyPlans) ) {
+            _VerifySampling();
+        }
         data.resize(0);
         data.resize(_spec.GetDOF(),0);
         if( time >= GetDuration() ) {
@@ -192,6 +195,8 @@ public:
                         _vgroupinterpolators[i](index-1,deltatime,data);
                     }
                 }
+                // should return the sample time relative to the last endpoint so it is easier to re-insert in the trajectory
+                data.at(_timeoffset) = deltatime;
             }
         }
     }
@@ -200,7 +205,7 @@ public:
     {
         BOOST_ASSERT(_bInit);
         BOOST_ASSERT(_timeoffset>=0);
-        BOOST_ASSERT(time >= 0);
+        BOOST_ASSERT(time >= -g_fEpsilon);
         _ComputeInternal();
         _VerifySampling();
         data.resize(0);
@@ -257,6 +262,24 @@ public:
         }
     }
 
+    size_t GetFirstWaypointIndexAfterTime(dReal time) const
+    {
+        BOOST_ASSERT(_bInit);
+        BOOST_ASSERT(_timeoffset>=0);
+        _ComputeInternal();
+        if( _vaccumtime.size() == 0 ) {
+            return 0;
+        }
+        if( time < _vaccumtime.at(0) ) {
+            return 0;
+        }
+        if( time >= _vaccumtime.at(_vaccumtime.size()-1) ) {
+            return GetNumWaypoints();
+        }
+        std::vector<dReal>::const_iterator itaccum = std::lower_bound(_vaccumtime.begin(), _vaccumtime.end(), time);
+        return itaccum-_vaccumtime.begin();
+    }
+
     dReal GetDuration() const
     {
         BOOST_ASSERT(_bInit);
@@ -301,6 +324,7 @@ public:
         boost::shared_ptr<GenericTrajectory> traj = boost::dynamic_pointer_cast<GenericTrajectory>(rawtraj);
         _spec.Swap(traj->_spec);
         _vderivoffsets.swap(traj->_vderivoffsets);
+        _vintegraloffsets.swap(traj->_vintegraloffsets);
         std::swap(_timeoffset, traj->_timeoffset);
         std::swap(_bInit, traj->_bInit);
         std::swap(_vtrajdata, traj->_vtrajdata);
@@ -388,8 +412,8 @@ protected:
             const string& interpolation = _spec._vgroups[i].interpolation;
             const string& name = _spec._vgroups[i].name;
             for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
-                if( _vderivoffsets[_spec._vgroups[i].offset+j] < -2 ) {
-                    throw OPENRAVE_EXCEPTION_FORMAT("%s interpolation group '%s' needs derivatives for sampling",interpolation%name,ORE_InvalidArguments);
+                if( _vderivoffsets.at(_spec._vgroups[i].offset+j) < -2 && _vintegraloffsets.at(_spec._vgroups[i].offset+j) < -2 ) {
+                    throw OPENRAVE_EXCEPTION_FORMAT("%s interpolation group '%s' needs derivatives/integrals for sampling",interpolation%name,ORE_InvalidArguments);
                 }
             }
         }
@@ -408,19 +432,21 @@ protected:
         _bSamplingVerified = true;
     }
 
-    /// \brief called in order to initialize _vgroupinterpolators and _vgroupvalidators and _vderivoffsets
+    /// \brief called in order to initialize _vgroupinterpolators and _vgroupvalidators, _vderivoffsets, _vintegraloffsets
     void _InitializeGroupFunctions()
     {
         // first set sizes to 0
         _vgroupinterpolators.resize(0);
         _vgroupvalidators.resize(0);
         _vderivoffsets.resize(0);
+        _vintegraloffsets.resize(0);
         _vgroupinterpolators.resize(_spec._vgroups.size());
         _vgroupvalidators.resize(_spec._vgroups.size());
         _vderivoffsets.resize(_spec.GetDOF(),-1);
+        _vintegraloffsets.resize(_spec.GetDOF(),-1);
         for(size_t i = 0; i < _spec._vgroups.size(); ++i) {
             const string& interpolation = _spec._vgroups[i].interpolation;
-            int nNeedDerivatives = 0;
+            int nNeedNeighboringInfo = 0;
             if( interpolation == "previous" ) {
                 _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolatePrevious,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
             }
@@ -439,7 +465,7 @@ protected:
                     _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolateLinear,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
                     _vgroupvalidators[i] = boost::bind(&GenericTrajectory::_ValidateLinear,this,boost::ref(_spec._vgroups[i]),_1,_2);
                 }
-                nNeedDerivatives = 2;
+                nNeedNeighboringInfo = 2;
             }
             else if( interpolation == "quadratic" ) {
                 if( _spec._vgroups[i].name.size() >= 14 && _spec._vgroups[i].name.substr(0,14) == "ikparam_values" ) {
@@ -453,35 +479,47 @@ protected:
                     _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolateQuadratic,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
                     _vgroupvalidators[i] = boost::bind(&GenericTrajectory::_ValidateQuadratic,this,boost::ref(_spec._vgroups[i]),_1,_2);
                 }
-                nNeedDerivatives = 3;
+                nNeedNeighboringInfo = 3;
             }
             else if( interpolation == "cubic" ) {
                 _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolateCubic,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
                 _vgroupvalidators[i] = boost::bind(&GenericTrajectory::_ValidateCubic,this,boost::ref(_spec._vgroups[i]),_1,_2);
-                nNeedDerivatives = 3;
+                nNeedNeighboringInfo = 3;
             }
             else if( interpolation == "quadric" ) {
                 _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolateQuadric,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
                 _vgroupvalidators[i] = boost::bind(&GenericTrajectory::_ValidateQuadratic,this,boost::ref(_spec._vgroups[i]),_1,_2);
-                nNeedDerivatives = 3;
+                nNeedNeighboringInfo = 3;
             }
             else if( interpolation == "quintic" ) {
                 _vgroupinterpolators[i] = boost::bind(&GenericTrajectory::_InterpolateQuintic,this,boost::ref(_spec._vgroups[i]),_1,_2,_3);
                 _vgroupvalidators[i] = boost::bind(&GenericTrajectory::_ValidateQuintic,this,boost::ref(_spec._vgroups[i]),_1,_2);
-                nNeedDerivatives = 3;
+                nNeedNeighboringInfo = 3;
             }
 
-            if( nNeedDerivatives ) {
+            if( nNeedNeighboringInfo ) {
                 std::vector<ConfigurationSpecification::Group>::const_iterator itderiv = _spec.FindTimeDerivativeGroup(_spec._vgroups[i]);
                 if( itderiv == _spec._vgroups.end() ) {
                     // don't throw an error here since it is unknown if the trajectory will be sampled
                     for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
-                        _vderivoffsets[_spec._vgroups[i].offset+j] = -nNeedDerivatives;
+                        _vderivoffsets[_spec._vgroups[i].offset+j] = -nNeedNeighboringInfo;
                     }
                 }
                 else {
                     for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
                         _vderivoffsets[_spec._vgroups[i].offset+j] = itderiv->offset+j;
+                    }
+                }
+                std::vector<ConfigurationSpecification::Group>::const_iterator itintegral = _spec.FindTimeIntegralGroup(_spec._vgroups[i]);
+                if( itintegral == _spec._vgroups.end() ) {
+                    // don't throw an error here since it is unknown if the trajectory will be sampled
+                    for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
+                        _vintegraloffsets[_spec._vgroups[i].offset+j] = -nNeedNeighboringInfo;
+                    }
+                }
+                else {
+                    for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
+                        _vintegraloffsets[_spec._vgroups[i].offset+j] = itintegral->offset+j;
                     }
                 }
             }
@@ -577,11 +615,35 @@ protected:
         size_t offset = ipoint*_spec.GetDOF();
         if( deltatime > g_fEpsilon ) {
             int derivoffset = _vderivoffsets[g.offset];
-            for(int i = 0; i < g.dof; ++i) {
-                // coeff*t^2 + deriv0*t + pos0
-                dReal deriv0 = _vtrajdata[offset+derivoffset+i];
-                dReal coeff = 0.5*_vdeltainvtime.at(ipoint+1)*(_vtrajdata[_spec.GetDOF()+offset+derivoffset+i]-deriv0);
-                data[g.offset+i] = _vtrajdata[offset+g.offset+i] + deltatime*(deriv0 + deltatime*coeff);
+            if( derivoffset >= 0 ) {
+                for(int i = 0; i < g.dof; ++i) {
+                    // coeff*t^2 + deriv0*t + pos0
+                    dReal deriv0 = _vtrajdata[offset+derivoffset+i];
+                    dReal deriv1 = _vtrajdata[_spec.GetDOF()+offset+derivoffset+i];
+                    dReal coeff = 0.5*_vdeltainvtime.at(ipoint+1)*(deriv1-deriv0);
+                    data[g.offset+i] = _vtrajdata[offset+g.offset+i] + deltatime*(deriv0 + deltatime*coeff);
+                }
+            }
+            else {
+                dReal ideltatime = _vdeltainvtime.at(ipoint+1);
+                dReal ideltatime2 = ideltatime*ideltatime;
+                int integraloffset = _vintegraloffsets[g.offset];
+                for(int i = 0; i < g.dof; ++i) {
+                    // c2*t**2 + c1*t + v0
+                    // c2*deltatime**2 + c1*deltatime + v0 = v1
+                    // integral: c2/3*deltatime**3 + c1/2*deltatime**2 + v0*deltatime = p1-p0
+                    // mult by (3/deltatime): c2*deltatime**2 + 3/2*c1*deltatime + 3*v0 = 3*(p1-p0)/deltatime
+                    // subtract by original: 0.5*c1*deltatime + 2*v0 - 3*(p1-p0)/deltatime + v1 = 0
+                    // c1*deltatime = 6*(p1-p0)/deltatime - 4*v0 - 2*v1
+                    dReal integral0 = _vtrajdata[offset+integraloffset+i];
+                    dReal integral1 = _vtrajdata[_spec.GetDOF()+offset+integraloffset+i];
+                    dReal value0 = _vtrajdata[offset+g.offset+i];
+                    dReal value1 = _vtrajdata[_spec.GetDOF()+offset+g.offset+i];
+                    dReal c1TimesDelta = 6*(integral1-integral0)*ideltatime - 4*value0 - 2*value1;
+                    dReal c1 = c1TimesDelta*ideltatime;
+                    dReal c2 = (value1 - value0 - c1TimesDelta)*ideltatime2;
+                    data[g.offset+i] = value0 + deltatime * (c1 + deltatime*c2);
+                }
             }
         }
         else {
@@ -641,7 +703,37 @@ protected:
 
     void _InterpolateCubic(const ConfigurationSpecification::Group& g, size_t ipoint, dReal deltatime, std::vector<dReal>& data)
     {
-        throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation not supported",ORE_InvalidArguments);
+        // c3 = (v1*dt + v0*dt - 2*px)/(dt**3)
+        // c2 = (3*px - 2*v0*dt - v1*dt)/(dt**2)
+        // c1 = v0
+        // c0 = 0
+        // p = c3*t**3 + c2*t**2 + c1*t + c0
+        size_t offset = ipoint*_spec.GetDOF();
+        if( deltatime > g_fEpsilon ) {
+            int derivoffset = _vderivoffsets[g.offset];
+            if( derivoffset >= 0 ) {
+                dReal ideltatime = _vdeltainvtime.at(ipoint+1);
+                dReal ideltatime2 = ideltatime*ideltatime;
+                dReal ideltatime3 = ideltatime2*ideltatime;
+                for(int i = 0; i < g.dof; ++i) {
+                    // coeff*t^2 + deriv0*t + pos0
+                    dReal deriv0 = _vtrajdata[offset+derivoffset+i];
+                    dReal deriv1 = _vtrajdata[_spec.GetDOF()+offset+derivoffset+i];
+                    dReal px = _vtrajdata.at(_spec.GetDOF()+offset+g.offset+i) - _vtrajdata[offset+g.offset+i];
+                    dReal c3 = (deriv1+deriv0)*ideltatime2 - 2*px*ideltatime3;
+                    dReal c2 = 3*px*ideltatime2 - (2*deriv0+deriv1)*ideltatime;
+                    data[g.offset+i] = _vtrajdata[offset+g.offset+i] + deltatime*(deriv0 + deltatime*(c2 + deltatime*c3));
+                }
+            }
+            else {
+                throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation does not have all data",ORE_InvalidArguments);
+            }
+        }
+        else {
+            for(int i = 0; i < g.dof; ++i) {
+                data[g.offset+i] = _vtrajdata[offset+g.offset+i];
+            }
+        }
     }
 
     void _InterpolateQuadric(const ConfigurationSpecification::Group& g, size_t ipoint, dReal deltatime, std::vector<dReal>& data)
@@ -672,25 +764,32 @@ protected:
 
     void _ValidateQuadratic(const ConfigurationSpecification::Group& g, size_t ipoint, dReal deltatime)
     {
-        if( deltatime > 0 ) {
+        if( deltatime > g_fEpsilon ) {
             size_t offset = ipoint*_spec.GetDOF();
             int derivoffset = _vderivoffsets[g.offset];
-            for(int i = 0; i < g.dof; ++i) {
-                // coeff*t^2 + deriv0*t + pos0
-                dReal deriv0 = _vtrajdata[offset+derivoffset+i];
-                dReal coeff = 0.5*_vdeltainvtime.at(ipoint+1)*(_vtrajdata[_spec.GetDOF()+offset+derivoffset+i]-deriv0);
-                dReal expected = _vtrajdata[offset+g.offset+i] + deltatime*(deriv0 + deltatime*coeff);
-                dReal error = RaveFabs(_vtrajdata[_spec.GetDOF()+offset+g.offset+i]-expected);
-                if( RaveFabs(error-2*PI) > g_fEpsilonQuadratic ) { // TODO, officially track circular joints
-                    OPENRAVE_ASSERT_OP_FORMAT(error,<=,g_fEpsilonQuadratic, "trajectory segment for group %s interpolation %s time %f points %d-%d dof %d is invalid", g.name%g.interpolation%deltatime%ipoint%(ipoint+1)%i, ORE_InvalidState);
+            if( derivoffset >= 0 ) {
+                for(int i = 0; i < g.dof; ++i) {
+                    // coeff*t^2 + deriv0*t + pos0
+                    dReal deriv0 = _vtrajdata[offset+derivoffset+i];
+                    dReal coeff = 0.5*_vdeltainvtime.at(ipoint+1)*(_vtrajdata[_spec.GetDOF()+offset+derivoffset+i]-deriv0);
+                    dReal expected = _vtrajdata[offset+g.offset+i] + deltatime*(deriv0 + deltatime*coeff);
+                    dReal error = RaveFabs(_vtrajdata.at(_spec.GetDOF()+offset+g.offset+i)-expected);
+                    if( RaveFabs(error-2*PI) > 1e-5 ) { // TODO, officially track circular joints
+                        OPENRAVE_ASSERT_OP_FORMAT(error,<=,1e-4, "trajectory segment for group %s interpolation %s time %f points %d-%d dof %d is invalid", g.name%g.interpolation%deltatime%ipoint%(ipoint+1)%i, ORE_InvalidState);
+                    }
                 }
+            }
+            else {
+                int integraloffset = _vintegraloffsets[g.offset];
+                BOOST_ASSERT(integraloffset>=0);
+                // cannot verify since there's not enough constraints
             }
         }
     }
 
     void _ValidateCubic(const ConfigurationSpecification::Group& g, size_t ipoint, dReal deltatime)
     {
-        throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation not supported",ORE_InvalidArguments);
+        // TODO, need 3 groups to verify
     }
 
     void _ValidateQuadric(const ConfigurationSpecification::Group& g, size_t ipoint, dReal deltatime)
@@ -706,12 +805,13 @@ protected:
     ConfigurationSpecification _spec;
     std::vector< boost::function<void(size_t,dReal,std::vector<dReal>&)> > _vgroupinterpolators;
     std::vector< boost::function<void(size_t,dReal)> > _vgroupvalidators;
-    std::vector<int> _vderivoffsets; ///< for every group that relies on derivatives, this will point to the offset (-1 if invalid and not needed, -2 if invalid and needed)
+    std::vector<int> _vderivoffsets; ///< for every group that relies on other info to compute its position, this will point to the derivative offset. -1 if invalid and not needed, -2 if invalid and needed
+    std::vector<int> _vintegraloffsets; ///< for every group that relies on other info to compute its position, this will point to the integral offset (ie the position for a velocity group). -1 if invalid and not needed, -2 if invalid and needed
     int _timeoffset;
-    bool _bInit;
 
     std::vector<dReal> _vtrajdata;
     mutable std::vector<dReal> _vaccumtime, _vdeltainvtime;
+    bool _bInit;
     mutable bool _bChanged; ///< if true, then _ComputeInternal() has to be called in order to compute _vaccumtime and _vdeltainvtime
     mutable bool _bSamplingVerified; ///< if false, then _VerifySampling() has not be called yet to verify that all points can be sampled.
 };

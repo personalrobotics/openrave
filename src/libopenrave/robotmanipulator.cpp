@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Copyright (C) 2006-2012 Rosen Diankov (rosen.diankov@gmail.com)
+// Copyright (C) 2006-2014 Rosen Diankov (rosen.diankov@gmail.com)
 //
 // This file is part of OpenRAVE.
 // OpenRAVE is free software: you can redistribute it and/or modify
@@ -42,7 +42,7 @@ RobotBase::Manipulator::Manipulator(RobotBasePtr probot, boost::shared_ptr<Robot
     if( !!r->GetEndEffector() ) {
         __pEffector = probot->GetLinks().at(r->GetEndEffector()->GetIndex());
     }
-    __pIkSolver.reset(); // will be initialized when needed
+    __pIkSolver.reset(); // will be initialized when needed. Problem: the freeinc parameters will not get transferred to the new iksolver
 //    if( _info._sIkSolverXMLId.size() > 0 ) {
 //        //__pIkSolver = RaveCreateIkSolver(probot->GetEnv(), _info._sIkSolverXMLId);
 //        // cannot call __pIkSolver->Init since this is the constructor...
@@ -59,6 +59,13 @@ int RobotBase::Manipulator::GetGripperDOF() const
     return static_cast<int>(__vgripperdofindices.size());
 }
 
+void RobotBase::Manipulator::SetChuckingDirection(const std::vector<dReal>& chuckingdirection)
+{
+    OPENRAVE_ASSERT_OP((int)chuckingdirection.size(),==,GetGripperDOF());
+    _info._vChuckingDirection = chuckingdirection;
+    GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorTool);
+}
+
 void RobotBase::Manipulator::SetLocalToolTransform(const Transform& t)
 {
     _info._sIkSolverXMLId.resize(0);
@@ -66,7 +73,7 @@ void RobotBase::Manipulator::SetLocalToolTransform(const Transform& t)
     _info._tLocalTool = t;
     __hashkinematicsstructure.resize(0);
     __hashstructure.resize(0);
-    GetRobot()->_ParametersChanged(Prop_RobotManipulatorTool);
+    GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorTool);
 }
 
 void RobotBase::Manipulator::SetLocalToolDirection(const Vector& direction)
@@ -76,7 +83,7 @@ void RobotBase::Manipulator::SetLocalToolDirection(const Vector& direction)
     _info._vdirection = direction;
     __hashkinematicsstructure.resize(0);
     __hashstructure.resize(0);
-    GetRobot()->_ParametersChanged(Prop_RobotManipulatorTool);
+    GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorTool);
 }
 
 void RobotBase::Manipulator::SetName(const std::string& name)
@@ -88,7 +95,7 @@ void RobotBase::Manipulator::SetName(const std::string& name)
         }
     }
     _info._name=name;
-    probot->_ParametersChanged(Prop_RobotManipulatorName);
+    probot->_PostprocessChangedParameters(Prop_RobotManipulatorName);
 }
 
 Transform RobotBase::Manipulator::GetTransform() const
@@ -146,7 +153,7 @@ bool RobotBase::Manipulator::SetIkSolver(IkSolverBasePtr iksolver)
     if( iksolver->Init(shared_from_this()) ) {
         __pIkSolver = iksolver;
         _info._sIkSolverXMLId = iksolver->GetXMLId();
-        GetRobot()->_ParametersChanged(Prop_RobotManipulatorSolver);
+        GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorSolver);
         return true;
     }
 
@@ -651,12 +658,29 @@ bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const Transform& tEE,
     return false;
 }
 
-bool RobotBase::Manipulator::CheckEndEffectorCollision(const IkParameterization& ikparam, CollisionReportPtr report) const
+bool RobotBase::Manipulator::CheckEndEffectorCollision(const IkParameterization& ikparam, CollisionReportPtr report, int numredundantsamples) const
 {
     if( ikparam.GetType() == IKP_Transform6D ) {
         return CheckEndEffectorCollision(ikparam.GetTransform6D(),report);
     }
     RobotBasePtr probot = GetRobot();
+    if( numredundantsamples > 0 ) {
+        if( ikparam.GetType() == IKP_TranslationDirection5D ) {
+            Transform tStartEE;
+            tStartEE.rot = quatRotateDirection(_info._vdirection, ikparam.GetTranslationDirection5D().dir);
+            tStartEE.trans = ikparam.GetTranslationDirection5D().pos;
+            Vector qdelta = quatFromAxisAngle(_info._vdirection, 2*M_PI/dReal(numredundantsamples));
+            for(int i = 0; i < numredundantsamples; ++i) {
+                if( !CheckEndEffectorCollision(tStartEE,report) ) {
+                    return false;
+                }
+                tStartEE.rot = quatMultiply(tStartEE.rot, qdelta);
+            }
+            return true;
+        }
+        RAVELOG_WARN_FORMAT("do not support redundant checking for iktype 0x%x", ikparam.GetType());
+    }
+
     IkSolverBasePtr pIkSolver = GetIkSolver();
     OPENRAVE_ASSERT_OP_FORMAT(GetArmDOF(), <=, ikparam.GetDOF(), "ikparam type 0x%x does not fully determine manipulator %s:%s end effector configuration", ikparam.GetType()%probot->GetName()%GetName(),ORE_InvalidArguments);
     OPENRAVE_ASSERT_FORMAT(!!pIkSolver, "manipulator %s:%s does not have an IK solver set",probot->GetName()%GetName(),ORE_Failed);
@@ -918,7 +942,7 @@ void RobotBase::Manipulator::serialize(std::ostream& o, int options) const
         FOREACHC(it,_info._vGripperJointNames) {
             o << *it << " ";
         }
-        FOREACHC(it,_info._vClosingDirection) {
+        FOREACHC(it,_info._vChuckingDirection) {
             SerializeRound(o,*it);
         }
         SerializeRound(o,_info._tLocalTool);
@@ -1066,13 +1090,13 @@ void RobotBase::Manipulator::_ComputeInternalInformation()
     }
 
     // init the gripper dof indices
-    std::vector<dReal> vClosingDirection;
-    size_t iclosingdirection = 0;
+    std::vector<dReal> vChuckingDirection;
+    size_t ichuckingdirection = 0;
     FOREACHC(itjointname,_info._vGripperJointNames) {
         JointPtr pjoint = probot->GetJoint(*itjointname);
         if( !pjoint ) {
             RAVELOG_WARN(str(boost::format("could not find gripper joint %s for manipulator %s")%*itjointname%GetName()));
-            iclosingdirection++;
+            ichuckingdirection++;
         }
         else {
             if( pjoint->GetDOFIndex() >= 0 ) {
@@ -1082,23 +1106,23 @@ void RobotBase::Manipulator::_ComputeInternalInformation()
                     }
                     else {
                         __vgripperdofindices.push_back(pjoint->GetDOFIndex()+i);
-                        if( iclosingdirection < _info._vClosingDirection.size() ) {
-                            vClosingDirection.push_back(_info._vClosingDirection[iclosingdirection++]);
+                        if( ichuckingdirection < _info._vChuckingDirection.size() ) {
+                            vChuckingDirection.push_back(_info._vChuckingDirection[ichuckingdirection++]);
                         }
                         else {
-                            vClosingDirection.push_back(0);
-                            RAVELOG_WARN(str(boost::format("manipulator %s closing direction not correct length, might get bad closing/release grasping")%GetName()));
+                            vChuckingDirection.push_back(0);
+                            RAVELOG_WARN(str(boost::format("manipulator %s chucking direction not correct length, might get bad chucking/release grasping")%GetName()));
                         }
                     }
                 }
             }
             else {
-                ++iclosingdirection;
+                ++ichuckingdirection;
                 RAVELOG_WARN(str(boost::format("manipulator %s gripper joint %s is not active, so has no dof index. ignoring.")%GetName()%*itjointname));
             }
         }
     }
-    _info._vClosingDirection.swap(vClosingDirection);
+    _info._vChuckingDirection.swap(vChuckingDirection);
 }
 
 }

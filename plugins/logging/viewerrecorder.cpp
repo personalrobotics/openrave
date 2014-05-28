@@ -714,7 +714,11 @@ protected:
         AVCodecContext *codec_ctx;
         AVCodec *codec;
 
+#if defined(LIBAVCODEC_VERSION_INT) && LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(54,25,0) // introduced at http://git.libav.org/?p=libav.git;a=commit;h=104e10fb426f903ba9157fdbfe30292d0e4c3d72
+        AVCodecID video_codec = codecid == -1 ? CODEC_ID_MPEG4 : (AVCodecID)codecid;
+#else
         CodecID video_codec = codecid == -1 ? CODEC_ID_MPEG4 : (CodecID)codecid;
+#endif
 #if LIBAVFORMAT_VERSION_INT >= (52<<16)
         AVOutputFormat *fmt = av_oformat_next(NULL); //first_oformat;
 #else

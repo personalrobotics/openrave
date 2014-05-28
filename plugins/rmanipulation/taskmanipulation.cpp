@@ -15,10 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "commonmanipulation.h"
 
-#ifdef HAVE_BOOST_REGEX
-#include <boost/regex.hpp>
-#endif
-
 #define GRASPTHRESH2 dReal(0.002f)
 
 struct GRASPGOAL
@@ -79,10 +75,15 @@ Task-based manipulation planning involving target objects. A lot of the algorith
 * grasptranslationstepmult\n\
 * graspfinestep\n\
 ");
-        RegisterCommand("CloseFingers",boost::bind(&TaskManipulation::CloseFingers,this,_1,_2),
-                        "Closes the active manipulator fingers using the grasp planner.");
-        RegisterCommand("ReleaseFingers",boost::bind(&TaskManipulation::ReleaseFingers,this,_1,_2),
-                        "Releases the active manipulator fingers using the grasp planner.\n"
+        RegisterCommand("CloseFingers",boost::bind(&TaskManipulation::ChuckFingers,this,_1,_2),
+                        "Chucks the active manipulator fingers using the grasp planner along manip->GetChuckingDirection().");
+        RegisterCommand("ChuckFingers",boost::bind(&TaskManipulation::ChuckFingers,this,_1,_2),
+                        "Chucks the active manipulator fingers using the grasp planner along manip->GetChuckingDirection().");
+        RegisterCommand("ReleaseFingers",boost::bind(&TaskManipulation::UnchuckFingers,this,_1,_2),
+                        "Unchucks the active manipulator fingers using the grasp planner.\n"
+                        "Also releases the given object.");
+        RegisterCommand("UnchuckFingers",boost::bind(&TaskManipulation::UnchuckFingers,this,_1,_2),
+                        "Unchucks the active manipulator fingers using the grasp planner.\n"
                         "Also releases the given object.");
         RegisterCommand("ReleaseActive",boost::bind(&TaskManipulation::ReleaseActive,this,_1,_2),
                         "Moves the active DOF using the grasp planner.");
@@ -93,14 +94,13 @@ Task-based manipulation planning involving target objects. A lot of the algorith
                         "The constraints work on the active degress of freedom of the manipulator starting from the current configuration");
         RegisterCommand("SetMinimumGoalPaths",boost::bind(&TaskManipulation::SetMinimumGoalPathsCommand,this,_1,_2),
                         "Sets _minimumgoalpaths for all planner parameters.");
+        RegisterCommand("SetPostProcessing",boost::bind(&TaskManipulation::SetPostProcessingCommand,this,_1,_2),
+                        "Sets post processing parameters.");
         RegisterCommand("SetRobot",boost::bind(&TaskManipulation::SetRobotCommand,this,_1,_2),
                         "Sets the robot.");
-#ifdef HAVE_BOOST_REGEX
-        RegisterCommand("SwitchModels",boost::bind(&TaskManipulation::SwitchModels,this,_1,_2),
-                        "Switches between thin and fat models for planning.");
-#endif
         _fMaxVelMult=1;
         _minimumgoalpaths=1;
+        _report.reset(new CollisionReport());
     }
     virtual ~TaskManipulation()
     {
@@ -118,7 +118,6 @@ Task-based manipulation planning involving target objects. A lot of the algorith
 
     virtual void Reset()
     {
-        _listSwitchModels.clear();
         ModuleBase::Reset();
         listsystems.clear();
         // recreate the planners since they store state
@@ -327,6 +326,35 @@ protected:
         return true;
     }
 
+    /// \brief restores the empty geometry group
+    class GeometryGroupSaver
+    {
+public:
+        GeometryGroupSaver(KinBodyPtr pbody, const std::string& sPaddedGeometryGroup) : _pbody(pbody), _sPaddedGeometryGroup(sPaddedGeometryGroup), _bPadded(false) {
+        }
+        ~GeometryGroupSaver() {
+            SwitchRegular();
+        }
+        void SwitchPadded() {
+            if( !_bPadded && _sPaddedGeometryGroup.size() > 0 ) {
+                RAVELOG_DEBUG("switching to padded robot\n");
+                _pbody->SetLinkGeometriesFromGroup(_sPaddedGeometryGroup);
+                _bPadded = true;
+            }
+        }
+        void SwitchRegular() {
+            if( _bPadded && _sPaddedGeometryGroup.size() > 0 ) {
+                RAVELOG_DEBUG("switching to regular robot\n");
+                _pbody->SetLinkGeometriesFromGroup("self");
+                _bPadded = false;
+            }
+        }
+protected:
+        KinBodyPtr _pbody;
+        std::string _sPaddedGeometryGroup;
+        bool _bPadded;
+    };
+
     bool GraspPlanning(ostream& sout, istream& sinput)
     {
         RobotBase::ManipulatorConstPtr pmanip = _robot->GetActiveManipulator();
@@ -350,9 +378,12 @@ protected:
         bool bQuitAfterFirstRun = false;
         dReal jitter = 0.03;
         int nJitterIterations = 5000;
+        std::string sPaddedGeometryGroup; // the padded geometry group for the robot that will be switched when planning
+        dReal fPadding = 0; // the padding that the sPaddedGeometryGroup is configured with
+        dReal fRRTStepLength = 0; // if > 0, then user set
 
         // indices into the grasp table
-        int iGraspDir = -1, iGraspPos = -1, iGraspRoll = -1, iGraspPreshape = -1, iGraspStandoff = -1, imanipulatordirection = -1;
+        int iGraspDir = -1, iGraspPos = -1, iGraspRoll = -1, iGraspPreshape = -1, iGraspStandoff = -1, imanipulatordirection = -1, iGraspFinalFingers=-1, iChuckingDirection=-1;
         int iGraspTransform = -1;     // if >= 0, use the grasp transform to check for collisions
         int iGraspTransformNoCol = -1;
         int iStartCountdown = 40;
@@ -394,11 +425,23 @@ protected:
             else if( cmd == "igraspdir" ) {
                 sinput >> iGraspDir;
             }
+            else if( cmd == "paddedgeometryinfo" ) {
+                sinput >> sPaddedGeometryGroup >> fPadding;
+            }
             else if( cmd == "igrasppos" ) {
                 sinput >> iGraspPos;
             }
             else if( cmd == "imanipulatordirection" ) {
                 sinput >> imanipulatordirection;
+            }
+            else if( cmd == "igraspfinalfingers" ) {
+                sinput >> iGraspFinalFingers;
+            }
+            else if( cmd == "ichuckingdirection" ) {
+                sinput >> iChuckingDirection;
+            }
+            else if( cmd == "steplength" ) {
+                sinput >> fRRTStepLength;
             }
             else if( cmd == "igrasproll" ) {
                 sinput >> iGraspRoll;
@@ -436,7 +479,7 @@ protected:
                     *ittrans = m;
                 }
             }
-            else if( cmd == "posedests" ) {
+            else if( cmd == "destposes" || cmd == "posedests" ) {
                 int numdests = 0; sinput >> numdests;
                 vObjDestinations.resize(numdests);
                 FOREACH(ittrans, vObjDestinations) {
@@ -506,8 +549,8 @@ protected:
         _robot->GetActiveDOFLimits(vHandLowerLimits,vHandUpperLimits);
         _robot->GetDOFValues(vCurRobotValues);
 
-        SwitchModelState switchstate(shared_problem());
-        _UpdateSwitchModels(true,true);
+        GeometryGroupSaver geometrypadder(KinBodyPtr(_robot), sPaddedGeometryGroup);
+        geometrypadder.SwitchPadded();
 
         // check if robot is in collision with padded models
         if( GetEnv()->CheckCollision(KinBodyConstPtr(_robot)) ) {
@@ -578,7 +621,7 @@ protected:
         if( pmanip->GetIkSolver()->Supports(IKP_TranslationDirection5D) ) {
             // if 5D, have to set a filter
             ikfilter = pmanip->GetIkSolver()->RegisterCustomFilter(0,boost::bind(&TaskManipulation::_FilterIkForGrasping,shared_problem(),_1,_2,_3,ptarget));
-            fApproachOffset = 0; // cannot approach
+            //fApproachOffset = 0; // cannot approach?
         }
 
         for(int igraspperm = 0; igraspperm < (int)vgrasppermuation.size(); ++igraspperm) {
@@ -587,11 +630,11 @@ protected:
 
             if(( listGraspGoals.size() > 0) &&( iCountdown-- <= 0) ) {
                 // start planning
-                _UpdateSwitchModels(true,false);
+                geometrypadder.SwitchPadded();
 
                 RAVELOG_VERBOSE(str(boost::format("planning grasps %d\n")%listGraspGoals.size()));
                 uint64_t basestart = utils::GetMicroTime();
-                ptraj = _PlanGrasp(listGraspGoals, nMaxSeedIkSolutions, goalFound, nMaxIterations,mapPreshapeTrajectories);
+                ptraj = _PlanGrasp(listGraspGoals, nMaxSeedIkSolutions, goalFound, nMaxIterations,mapPreshapeTrajectories, geometrypadder, fPadding, fRRTStepLength);
                 nSearchTime += utils::GetMicroTime() - basestart;
 
                 if( !!ptraj || bQuitAfterFirstRun ) {
@@ -628,7 +671,8 @@ protected:
                 continue;
             }
 
-            _UpdateSwitchModels(false,false);
+            // reset the padded models since will be solving for IK and checking grasps
+            geometrypadder.SwitchRegular();
 
             IkParameterization tGoalEndEffector;
             // set the goal preshape
@@ -794,7 +838,9 @@ protected:
                     continue;
                 }
 
-                _UpdateSwitchModels(true,true);     // switch to fat models
+                // switch to reguar models?
+                geometrypadder.SwitchRegular();
+
                 if( fGraspApproachOffset > 0 ) {
                     Transform tsmalloffset;
                     // now test at the approach point (with offset)
@@ -827,8 +873,8 @@ protected:
                 _robot->SetActiveDOFValues(vFinalGripperValues, true);
             }
 
-            //while (getchar() != '\n') usleep(1000);
-            _UpdateSwitchModels(false,false);     // should test destination with thin models
+            // should test destination with original models
+            geometrypadder.SwitchRegular();
 
             list< IkParameterization > listDests;
             if( bRandomDests ) {
@@ -848,13 +894,32 @@ protected:
 
                 ptarget->SetTransform(transTarg);
                 if( bTargetCollision ) {
-                    RAVELOG_VERBOSE(str(boost::format("target collision at dest %d: %s")%vdestpermuation[idestperm]%report->__str__()));
+                    if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                        std::stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+                        ss << str(boost::format("target collision at dest %d, %s, pose=")%vdestpermuation[idestperm]%report->__str__());
+                        ss << transDestTarget;
+                        ss << std::endl;
+                        RAVELOG_VERBOSE(ss.str());
+                    }
                     continue;
                 }
 
                 if( !nMobileAffine ) {
-                    if( pmanip->FindIKSolution(tDestEndEffector, vikgoal, IKFO_CheckEnvCollisions) ) {
+                    bool bSuccess = pmanip->FindIKSolution(tDestEndEffector, vikgoal, IKFO_CheckEnvCollisions);
+                    if( bSuccess ) {
                         listDests.push_back(tDestEndEffector);
+                    }
+                    if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                        std::stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+                        if( bSuccess ) {
+                            ss << "succeeded ";
+                        }
+                        else {
+                            ss << "failed ";
+                        }
+                        ss << "dest IkParameterization('" << tDestEndEffector << "')";
+                        RAVELOG_VERBOSE(ss.str());
+
                     }
                 }
                 else {
@@ -874,7 +939,7 @@ protected:
             }
 
             // finally start planning
-            _UpdateSwitchModels(true,false);
+            geometrypadder.SwitchPadded();
 
             if( pmanip->GetGripperIndices().size() > 0 && itpreshapetraj == mapPreshapeTrajectories.end() ) {
                 // not present in map, so look for correct one
@@ -932,7 +997,7 @@ protected:
             if( (int)listGraspGoals.size() >= nMaxSeedGrasps ) {
                 RAVELOG_VERBOSE(str(boost::format("planning grasps %d\n")%listGraspGoals.size()));
                 uint64_t basestart = utils::GetMicroTime();
-                ptraj = _PlanGrasp(listGraspGoals, nMaxSeedGrasps, goalFound, nMaxIterations,mapPreshapeTrajectories);
+                ptraj = _PlanGrasp(listGraspGoals, nMaxSeedGrasps, goalFound, nMaxIterations,mapPreshapeTrajectories, geometrypadder, fPadding, fRRTStepLength);
                 nSearchTime += utils::GetMicroTime() - basestart;
                 if( bQuitAfterFirstRun ) {
                     break;
@@ -944,16 +1009,18 @@ protected:
             }
         }
 
+        geometrypadder.SwitchPadded();
         // if there's left over goal positions, start planning
         while( !ptraj && listGraspGoals.size() > 0 ) {
             //TODO have to update ptrajToPreshape
             RAVELOG_VERBOSE(str(boost::format("planning grasps %d\n")%listGraspGoals.size()));
             uint64_t basestart = utils::GetMicroTime();
-            ptraj = _PlanGrasp(listGraspGoals, nMaxSeedGrasps, goalFound, nMaxIterations,mapPreshapeTrajectories);
+            ptraj = _PlanGrasp(listGraspGoals, nMaxSeedGrasps, goalFound, nMaxIterations,mapPreshapeTrajectories, geometrypadder, fPadding, fRRTStepLength);
             nSearchTime += utils::GetMicroTime() - basestart;
         }
 
-        _UpdateSwitchModels(false,false);
+        // turn off padding since will be performing the final trajectory stiching
+        geometrypadder.SwitchRegular();
 
         if( !ptraj ) {
             return false;     // couldn't not find any grasps
@@ -1022,7 +1089,7 @@ protected:
         return true;
     }
 
-    bool CloseFingers(ostream& sout, istream& sinput)
+    bool ChuckFingers(ostream& sout, istream& sinput)
     {
         bool bExecute = true, bOutputFinal=false;
         string strtrajfilename;
@@ -1030,7 +1097,7 @@ protected:
         Vector direction;
         RobotBase::ManipulatorConstPtr pmanip = _robot->GetActiveManipulator();
         boost::shared_ptr<GraspParameters> graspparams(new GraspParameters(GetEnv()));
-        graspparams->vgoalconfig = pmanip->GetClosingDirection();
+        graspparams->vgoalconfig = pmanip->GetChuckingDirection();
 
         vector<dReal> voffset;
         string cmd;
@@ -1130,7 +1197,7 @@ protected:
         ptraj->GetWaypoint(-1,vlastvalues,_robot->GetActiveConfigurationSpecification());
         if(vlastvalues.size() == voffset.size() ) {
             for(size_t i = 0; i < voffset.size(); ++i) {
-                vlastvalues[i] += voffset[i]*pmanip->GetClosingDirection().at(i);
+                vlastvalues[i] += voffset[i]*pmanip->GetChuckingDirection().at(i);
             }
             _robot->SetActiveDOFValues(vlastvalues,true);
             _robot->GetActiveDOFValues(vlastvalues);
@@ -1141,7 +1208,7 @@ protected:
         return true;
     }
 
-    bool ReleaseFingers(ostream& sout, istream& sinput)
+    bool UnchuckFingers(ostream& sout, istream& sinput)
     {
         bool bExecute = true, bOutputFinal=false;
         string strtrajfilename;
@@ -1150,7 +1217,7 @@ protected:
         KinBodyPtr ptarget;
         RobotBase::ManipulatorConstPtr pmanip = _robot->GetActiveManipulator();
         boost::shared_ptr<GraspParameters> graspparams(new GraspParameters(GetEnv()));
-        graspparams->vgoalconfig = pmanip->GetClosingDirection();
+        graspparams->vgoalconfig = pmanip->GetChuckingDirection();
         FOREACH(it,graspparams->vgoalconfig) {
             *it = -*it;
         }
@@ -1292,20 +1359,20 @@ protected:
         boost::shared_ptr<ostream> pOutputTrajStream;
         boost::shared_ptr<GraspParameters> graspparams(new GraspParameters(GetEnv()));
 
-        // initialize the moving direction as the opposite of the closing direction defined in the manipulators
-        vector<dReal> vclosingsign_full(_robot->GetDOF(), 0);
+        // initialize the moving direction as the opposite of the chucking direction defined in the manipulators
+        vector<dReal> vchuckingsign_full(_robot->GetDOF(), 0);
         FOREACHC(itmanip, _robot->GetManipulators()) {
-            BOOST_ASSERT((*itmanip)->GetClosingDirection().size()==(*itmanip)->GetGripperIndices().size());
-            for(size_t i = 0; i < (*itmanip)->GetClosingDirection().size(); ++i) {
-                if( (*itmanip)->GetClosingDirection()[i] != 0 )
-                    vclosingsign_full[(*itmanip)->GetGripperIndices()[i]] = (*itmanip)->GetClosingDirection()[i];
+            BOOST_ASSERT((*itmanip)->GetChuckingDirection().size()==(*itmanip)->GetGripperIndices().size());
+            for(size_t i = 0; i < (*itmanip)->GetChuckingDirection().size(); ++i) {
+                if( (*itmanip)->GetChuckingDirection()[i] != 0 )
+                    vchuckingsign_full[(*itmanip)->GetGripperIndices()[i]] = (*itmanip)->GetChuckingDirection()[i];
             }
         }
 
         graspparams->vgoalconfig.resize(_robot->GetActiveDOF());
         int i = 0;
         FOREACHC(itindex,_robot->GetActiveDOFIndices()) {
-            graspparams->vgoalconfig[i++] = -vclosingsign_full.at(*itindex);
+            graspparams->vgoalconfig[i++] = -vchuckingsign_full.at(*itindex);
         }
 
         string cmd;
@@ -1423,118 +1490,6 @@ protected:
         return true;
     }
 
-    class SwitchModelContainer
-    {
-public:
-        SwitchModelContainer(KinBodyPtr pbody, const string &fatfilename) : _pbody(pbody) {
-            RAVELOG_VERBOSE(str(boost::format("register %s body with %s fatfile\n")%pbody->GetName()%fatfilename));
-            _pbodyfat = pbody->GetEnv()->ReadKinBodyURI(fatfilename);
-            // validate the fat body
-            BOOST_ASSERT(pbody->GetLinks().size()==_pbodyfat->GetLinks().size());
-            _bFat=false;
-        }
-        virtual ~SwitchModelContainer() {
-            Switch(false);
-        }
-
-        void Switch(bool bSwitchToFat)
-        {
-            if( _bFat != bSwitchToFat ) {
-                RAVELOG_DEBUG(str(boost::format("switching %s to fat: %d\n")%_pbody->GetName()%(int)bSwitchToFat));
-                FOREACHC(itlink,_pbody->GetLinks()) {
-                    KinBody::LinkPtr pswitchlink = _pbodyfat->GetLink((*itlink)->GetName());
-                    (*itlink)->SwapGeometries(pswitchlink);
-                }
-                _bFat = bSwitchToFat;
-            }
-        }
-
-        KinBodyPtr GetBody() const {
-            return _pbody;
-        }
-        bool IsFat() const {
-            return _bFat;
-        }
-private:
-        KinBodyPtr _pbody, _pbodyfat;
-        bool _bFat;
-    };
-
-    class SwitchModelState
-    {
-public:
-        SwitchModelState(boost::shared_ptr<TaskManipulation> ptask) : _ptask(ptask) {
-            _bFat = false;
-            FOREACH(it, _ptask->_listSwitchModels) {
-                if( (*it)->IsFat() ) {
-                    _bFat = true;
-                    break;
-                }
-            }
-        }
-        virtual ~SwitchModelState() {
-            _ptask->_UpdateSwitchModels(_bFat);
-        }
-private:
-        boost::shared_ptr<TaskManipulation> _ptask;
-        bool _bFat;
-    };
-
-    typedef boost::shared_ptr<SwitchModelContainer> SwitchModelContainerPtr;
-
-    bool SwitchModels(ostream& sout, istream& sinput)
-    {
-        int doswitch=-1;
-        string cmd;
-        bool bUpdateBodies=true;
-        while(!sinput.eof()) {
-            sinput >> cmd;
-            if( !sinput )
-                break;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
-
-            if( cmd == "register" ) {
-                string pattern, fatfilename;
-                sinput >> pattern >> fatfilename;
-                if( !!sinput ) {
-                    _listSwitchModelPatterns.push_back(make_pair(pattern,fatfilename));
-                }
-            }
-            else if( cmd == "unregister" ) {
-                string pattern;
-                sinput >> pattern;
-                list<pair<string,string> >::iterator it;
-                FORIT(it,_listSwitchModelPatterns) {
-                    if( it->first == pattern )
-                        it = _listSwitchModelPatterns.erase(it);
-                    else
-                        ++it;
-                }
-            }
-            else if( cmd == "update" )
-                sinput >> bUpdateBodies;
-            else if( cmd == "switchtofat" )
-                sinput >> doswitch;
-            else if( cmd == "clearpatterns" )
-                _listSwitchModelPatterns.clear();
-            else if( cmd == "clearmodels" )
-                _listSwitchModels.clear();
-            else {
-                RAVELOG_WARN(str(boost::format("unrecognized command: %s\n")%cmd));
-                break;
-            }
-
-            if( !sinput ) {
-                RAVELOG_ERROR(str(boost::format("failed processing command %s\n")%cmd));
-                return false;
-            }
-        }
-
-        if( doswitch >= 0 )
-            _UpdateSwitchModels(doswitch>0,bUpdateBodies);
-        return true;
-    }
-
 protected:
     inline boost::shared_ptr<TaskManipulation> shared_problem() {
         return boost::dynamic_pointer_cast<TaskManipulation>(shared_from_this());
@@ -1543,117 +1498,8 @@ protected:
         return boost::dynamic_pointer_cast<TaskManipulation const>(shared_from_this());
     }
 
-    TrajectoryBasePtr _MoveArm(const vector<int>&activejoints, planningutils::ManipulatorIKGoalSampler& goalsampler, int& nGoalIndex, int nMaxIterations)
-    {
-        int nSeedIkSolutions = 8;
-        int nJitterIterations = 5000;
-        dReal jitter = 0.03;
-        int nMaxTries = 3;
-        dReal fGoalSamplingProb = 0.05;
-        RAVELOG_DEBUG("Starting MoveArm...\n");
-        BOOST_ASSERT( !!_pRRTPlanner );
-        TrajectoryBasePtr ptraj;
-        RobotBase::RobotStateSaver _saver(_robot);
-
-        if( activejoints.size() == 0 ) {
-            RAVELOG_WARN("move arm failed\n");
-            return ptraj;
-        }
-
-        if( GetEnv()->CheckCollision(KinBodyConstPtr(_robot)) )
-            RAVELOG_WARN("Hand in collision\n");
-
-        RRTParametersPtr params(new RRTParameters());
-        params->_minimumgoalpaths = _minimumgoalpaths;
-        _robot->SetActiveDOFs(activejoints);
-        params->SetRobotActiveJoints(_robot);
-        //params->_sPathOptimizationPlanner = ""; // no smoothing
-
-        _robot->GetActiveDOFValues(params->vinitialconfig);
-
-        // make sure the initial and goal configs are not in collision
-        vector<dReal> vgoal;
-        params->vgoalconfig.reserve(nSeedIkSolutions*_robot->GetActiveDOF());
-        goalsampler.SetSamplingProb(1);
-        while(nSeedIkSolutions > 0) {
-            if( goalsampler.Sample(vgoal) ) {
-                params->vgoalconfig.insert(params->vgoalconfig.end(), vgoal.begin(), vgoal.end());
-                --nSeedIkSolutions;
-            }
-            else {
-                --nSeedIkSolutions;
-            }
-        }
-
-        if( params->vgoalconfig.size() == 0 ) {
-            return ptraj;
-        }
-
-        goalsampler.SetSamplingProb(fGoalSamplingProb);
-        params->_samplegoalfn = boost::bind(&planningutils::ManipulatorIKGoalSampler::Sample,&goalsampler,_1);
-
-        // restore
-        _robot->SetActiveDOFValues(params->vinitialconfig);
-
-        vector<dReal> vinsertconfiguration; // configuration to add at the beginning of the trajectory, usually it is in collision
-        // jitter again for initial collision
-        switch( planningutils::JitterActiveDOF(_robot,nJitterIterations,jitter) ) {
-        case 0:
-            RAVELOG_WARN("jitter failed for initial\n");
-            return TrajectoryBasePtr();
-        case 1:
-            RAVELOG_DEBUG("original robot position in collision, so jittered out of it\n");
-            vinsertconfiguration = params->vinitialconfig;
-            _robot->GetActiveDOFValues(params->vinitialconfig);
-            break;
-        }
-
-        ptraj = RaveCreateTrajectory(GetEnv(),"");
-        params->_nMaxIterations = nMaxIterations;     // max iterations before failure
-
-        bool bSuccess = false;
-        RAVELOG_VERBOSE("starting planning\n");
-
-        stringstream ss;
-        for(int iter = 0; iter < nMaxTries; ++iter) {
-            if( !_pRRTPlanner->InitPlan(_robot, params) ) {
-                RAVELOG_WARN("InitPlan failed\n");
-                ptraj.reset();
-                return ptraj;
-            }
-
-            if( _pRRTPlanner->PlanPath(ptraj) ) {
-                stringstream sinput; sinput << "GetGoalIndex";
-                _pRRTPlanner->SendCommand(ss,sinput);
-                ss >> nGoalIndex;     // extract the goal index
-                if( !ss ) {
-                    RAVELOG_WARN("failed to extract goal index\n");
-                }
-                else {
-                    RAVELOG_INFO(str(boost::format("finished planning, goal index: %d")%nGoalIndex));
-                }
-                bSuccess = true;
-                break;
-            }
-            else {
-                RAVELOG_WARN("PlanPath failed\n");
-            }
-        }
-
-        if( !bSuccess ) {
-            ptraj.reset();
-        }
-        if( RaveGetDebugLevel() & Level_VerifyPlans ) {
-            planningutils::VerifyTrajectory(params, ptraj);
-        }
-        if( vinsertconfiguration.size() > 0 ) {
-            planningutils::InsertActiveDOFWaypointWithRetiming(0,vinsertconfiguration,vector<dReal>(), ptraj, _robot, _fMaxVelMult);
-        }
-        return ptraj;
-    }
-
-    /// grasps using the list of grasp goals. Removes all the goals that the planner planned with
-    TrajectoryBasePtr _PlanGrasp(list<GRASPGOAL>&listGraspGoals, int nSeedIkSolutions, GRASPGOAL& goalfound, int nMaxIterations,PRESHAPETRAJMAP& mapPreshapeTrajectories)
+    /// \brief grasps using the list of grasp goals. Removes all the goals that the planner planned with
+    TrajectoryBasePtr _PlanGrasp(list<GRASPGOAL>&listGraspGoals, int nSeedIkSolutions, GRASPGOAL& goalfound, int nMaxIterations,PRESHAPETRAJMAP& mapPreshapeTrajectories, GeometryGroupSaver& geometrypadder, dReal fPadding, dReal fRRTStepLength)
     {
         RobotBase::ManipulatorConstPtr pmanip = _robot->GetActiveManipulator();
         TrajectoryBasePtr ptraj;
@@ -1712,36 +1558,218 @@ protected:
         FOREACH(itgoal, listgraspsused) {
             listgoals.push_back(itgoal->tgrasp);
         }
-        planningutils::ManipulatorIKGoalSampler goalsampler(pmanip, listgoals);
+        planningutils::ManipulatorIKGoalSampler goalsampler(pmanip, listgoals, 20, 100);
 
         int nGoalIndex = -1;
-        ptraj = _MoveArm(pmanip->GetArmIndices(), goalsampler, nGoalIndex, nMaxIterations);
+        ptraj = _MoveArm(pmanip->GetArmIndices(), goalsampler, nGoalIndex, nMaxIterations, fPadding, fRRTStepLength);
         if (!!ptraj) {
             int nGraspIndex = goalsampler.GetIkParameterizationIndex(nGoalIndex);
             BOOST_ASSERT( nGraspIndex >= 0 && nGraspIndex < (int)listgraspsused.size() );
             list<GRASPGOAL>::iterator it = listgraspsused.begin();
             advance(it,nGraspIndex);
             goalfound = *it;
+
+            // have to check that the goal is accurate, otherwise have to insert a new waypoint (or extend waypoint?)
+            std::vector<dReal> vplannedgoal;
+            ptraj->GetWaypoint(-1, vplannedgoal, pmanip->GetArmConfigurationSpecification());
+            _robot->SetDOFValues(vplannedgoal, KinBody::CLA_CheckLimits, pmanip->GetArmIndices());
+            IkParameterization plannedikparam = pmanip->GetIkParameterization(goalfound.tgrasp.GetType());
+            dReal ferror2 = goalfound.tgrasp.ComputeDistanceSqr(plannedikparam);
+            if( ferror2 >= dReal(1e-6) ) {
+                RAVELOG_DEBUG_FORMAT("planned goal is jittered, error=%f, solving for closest ik solution", RaveSqrt(ferror2));
+                geometrypadder.SwitchRegular();
+                // need to look at all ik solutions since there's no other way of getting closest one
+                if( pmanip->FindIKSolutions(goalfound.tgrasp, _vcachedsolutions, IKFO_CheckEnvCollisions) ) {
+                    // find the best
+                    size_t bestindex = 0;
+                    dReal bestdist=1e30;
+                    std::vector<dReal> vtest;
+                    for(size_t isolution = 0; isolution < _vcachedsolutions.size(); ++isolution) {
+                        vtest = _vcachedsolutions[isolution];
+                        _robot->SubtractDOFValues(vtest, vplannedgoal, pmanip->GetArmIndices());
+                        dReal fdist = 0;
+                        FOREACHC(itvalue, vtest) {
+                            fdist += RaveFabs(*itvalue);
+                        }
+                        if( fdist < bestdist ) {
+                            bestdist = fdist;
+                            bestindex = isolution;
+                        }
+                    }
+                    if( bestdist < 0.4 ) {
+                        RAVELOG_DEBUG_FORMAT("found solution with abs dist %f, extending trajectory to it...", bestdist);
+                        // extend the waypoint rather than insert in order to keep velocity
+                        _robot->SetActiveDOFs(pmanip->GetArmIndices());
+                        planningutils::ExtendActiveDOFWaypoint(ptraj->GetNumWaypoints(), _vcachedsolutions.at(bestindex), std::vector<dReal>(), ptraj, _robot);
+                    }
+                    else {
+                        RAVELOG_WARN_FORMAT("found solution with abs dist %f, this is too big so ignoring", bestdist);
+                    }
+                }
+                else {
+                    RAVELOG_WARN("could not find closer goal!!\n");
+                }
+            }
+
             RAVELOG_DEBUG("total planning time %d ms\n", (uint32_t)(utils::GetMicroTime()-tbase)/1000);
         }
 
         return ptraj;
     }
 
-    IkReturn _FilterIkForGrasping(std::vector<dReal>&vsolution, RobotBase::ManipulatorConstPtr pmanip, const IkParameterization &ikparam, KinBodyPtr ptarget)
+    TrajectoryBasePtr _MoveArm(const vector<int>&activejoints, planningutils::ManipulatorIKGoalSampler& goalsampler, int& nGoalIndex, int nMaxIterations, dReal fPadding, dReal fRRTStepLength, int nMaxTries = 1)
+    {
+        int nSeedIkSolutions = 8;
+        int nJitterIterations = 5000;
+        dReal jitter = 0.03;
+        dReal fGoalSamplingProb = 0.05;
+        RAVELOG_DEBUG("Starting MoveArm...\n");
+        BOOST_ASSERT( !!_pRRTPlanner );
+        TrajectoryBasePtr ptraj;
+        RobotBase::RobotStateSaver _saver(_robot);
+
+        if( activejoints.size() == 0 ) {
+            RAVELOG_WARN("move arm failed\n");
+            return ptraj;
+        }
+
+        if( GetEnv()->CheckCollision(KinBodyConstPtr(_robot)) )
+            RAVELOG_WARN("Hand in collision\n");
+
+        RRTParametersPtr params(new RRTParameters());
+        params->_minimumgoalpaths = _minimumgoalpaths;
+        if( _sPostProcessingParameters.size() > 0 ) {
+            params->_sPostProcessingParameters = _sPostProcessingParameters;
+        }
+        _robot->SetActiveDOFs(activejoints);
+        params->SetRobotActiveJoints(_robot);
+        if( fRRTStepLength > 0 ) {
+            params->_fStepLength = fRRTStepLength;
+        }
+        //params->_sPathOptimizationPlanner = ""; // no smoothing
+
+        _robot->GetActiveDOFValues(params->vinitialconfig);
+
+        // make sure the initial and goal configs are not in collision
+        vector<dReal> vgoal;
+        params->vgoalconfig.reserve(nSeedIkSolutions*_robot->GetActiveDOF());
+        goalsampler.SetSamplingProb(1);
+        goalsampler.SetJitter(fPadding*2.5);
+        while(nSeedIkSolutions > 0) {
+            if( goalsampler.Sample(vgoal) ) {
+                params->vgoalconfig.insert(params->vgoalconfig.end(), vgoal.begin(), vgoal.end());
+                --nSeedIkSolutions;
+            }
+            else {
+                RAVELOG_VERBOSE("could not sample goal\n");
+                --nSeedIkSolutions;
+            }
+        }
+
+        if( params->vgoalconfig.size() == 0 ) {
+            RAVELOG_WARN("failed to find any goals, possibly need to jitter?\n");
+            return ptraj;
+        }
+
+        goalsampler.SetSamplingProb(fGoalSamplingProb);
+        params->_samplegoalfn = boost::bind(&planningutils::ManipulatorIKGoalSampler::Sample,&goalsampler,_1);
+
+        // restore
+        _robot->SetActiveDOFValues(params->vinitialconfig);
+
+        vector<dReal> vinsertconfiguration; // configuration to add at the beginning of the trajectory, usually it is in collision
+        // jitter again for initial collision
+        switch( planningutils::JitterActiveDOF(_robot,nJitterIterations,jitter) ) {
+        case 0: {
+            std::stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+            ss << "jitter failed for initial=[";
+            FOREACHC(it, params->vinitialconfig) {
+                ss << *it << ", ";
+            }
+            ss << "]";
+            RAVELOG_WARN(ss.str());
+            return TrajectoryBasePtr();
+        }
+        case 1:
+            RAVELOG_DEBUG("original robot position in collision, so jittered out of it\n");
+            vinsertconfiguration = params->vinitialconfig;
+            _robot->GetActiveDOFValues(params->vinitialconfig);
+            break;
+        }
+
+        ptraj = RaveCreateTrajectory(GetEnv(),"");
+        params->_nMaxIterations = nMaxIterations;     // max iterations before failure
+
+        bool bSuccess = false;
+        RAVELOG_VERBOSE("starting planning\n");
+
+        stringstream ss;
+        for(int iter = 0; iter < nMaxTries; ++iter) {
+            if( !_pRRTPlanner->InitPlan(_robot, params) ) {
+                RAVELOG_WARN("InitPlan failed\n");
+                ptraj.reset();
+                return ptraj;
+            }
+
+            if( _pRRTPlanner->PlanPath(ptraj) ) {
+                stringstream sinput; sinput << "GetGoalIndex";
+                _pRRTPlanner->SendCommand(ss,sinput);
+                ss >> nGoalIndex;     // extract the goal index
+                if( !ss ) {
+                    RAVELOG_WARN("failed to extract goal index\n");
+                }
+                else {
+                    RAVELOG_INFO(str(boost::format("finished planning, goal index: %d")%nGoalIndex));
+                }
+                bSuccess = true;
+                break;
+            }
+            else {
+                RAVELOG_WARN("PlanPath failed\n");
+            }
+        }
+
+        if( !bSuccess ) {
+            ptraj.reset();
+        }
+        if( RaveGetDebugLevel() & Level_VerifyPlans ) {
+            planningutils::VerifyTrajectory(params, ptraj);
+        }
+        if( vinsertconfiguration.size() > 0 ) {
+            planningutils::InsertActiveDOFWaypointWithRetiming(0,vinsertconfiguration,vector<dReal>(), ptraj, _robot, _fMaxVelMult);
+        }
+        return ptraj;
+    }
+
+    IkReturn _FilterIkForGrasping(std::vector<dReal>& vsolution, RobotBase::ManipulatorConstPtr pmanip, const IkParameterization &ikparam, KinBodyPtr ptarget)
     {
         if( _robot->IsGrabbing(ptarget) ) {
             return IKRA_Success;
         }
         if( ikparam.GetType() != IKP_Transform6D ) {
             // only check end effector if not trasform 6d
-            if( pmanip->CheckEndEffectorCollision(pmanip->GetEndEffectorTransform()) ) {
-                RAVELOG_DEBUG("grasper planner CheckEndEffectorCollision\n");
-                return IKRA_Reject;
+            if( pmanip->CheckEndEffectorCollision(pmanip->GetTransform(), _report) ) {
+                // if any of the collisions is the target
+                if( (!!_report->plink1 && _report->plink1->GetParent() == ptarget) || (!!_report->plink2 && _report->plink2->GetParent() == ptarget) ) {
+                    // ignore since the collision is with the grabbing target, perhaps there should be a configurable option for this?
+                }
+                else {
+                    if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                        std::stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+                        ss << "grasper planner CheckEndEffectorCollision: " << _report->__str__() << ", manipvalues=[";
+                        FOREACHC(it, vsolution) {
+                            ss << *it << ", ";
+                        }
+                        ss << "]";
+                        RAVELOG_VERBOSE(ss.str());
+                    }
+                    return IKRA_Reject;
+                }
             }
+            return IKRA_Success;
         }
 
-        if( pmanip->GetGripperIndices().size() > 0 ) {
+        if( pmanip->GetGripperIndices().size() > 0 && !!_pGrasperPlanner) {
             RobotBase::RobotStateSaver saver(_robot);
             _robot->SetActiveDOFs(pmanip->GetGripperIndices());
             if( !_phandtraj ) {
@@ -1774,61 +1802,18 @@ protected:
         return IKRA_Success;
     }
 
-    void _UpdateSwitchModels(bool bSwitchToFat, bool bUpdateBodies=true)
-    {
-        if( bSwitchToFat && bUpdateBodies ) {
-            // update model list
-            string strcmd,strname;
-#ifdef HAVE_BOOST_REGEX
-            boost::regex re;
-#endif
-
-            vector<KinBodyPtr>::const_iterator itbody;
-            list<SwitchModelContainerPtr>::iterator itmodel;
-            vector<KinBodyPtr> vbodies;
-            GetEnv()->GetBodies(vbodies);
-            FORIT(itbody, vbodies) {
-                FORIT(itmodel,_listSwitchModels) {
-                    if( (*itmodel)->GetBody() == *itbody ) {
-                        break;
-                    }
-                }
-                if( itmodel != _listSwitchModels.end() ) {
-                    continue;
-                }
-                FOREACH(itpattern, _listSwitchModelPatterns) {
-                    bool bMatches=false;
-#ifdef HAVE_BOOST_REGEX
-                    try {
-                        re.assign(itpattern->first, boost::regex_constants::icase);
-                    }
-                    catch (boost::regex_error& e) {
-                        RAVELOG_ERROR(str(boost::format("%s is not a valid regular expression: %s")%itpattern->first%e.what()));
-                        continue;
-                    }
-
-                    // convert
-                    bMatches = boost::regex_match((*itbody)->GetName().c_str(), re);
-#else
-                    RAVELOG_DEBUG(str(boost::format("boost regex not enabled, cannot parse %s\n")%itpattern->first));
-                    bMatches = (*itbody)->GetName() == itpattern->first;
-#endif
-                    if( bMatches ) {
-                        _listSwitchModels.push_back(SwitchModelContainerPtr(new SwitchModelContainer(*itbody,itpattern->second)));
-                    }
-                }
-            }
-        }
-
-        FOREACH(it,_listSwitchModels) {
-            (*it)->Switch(bSwitchToFat);
-        }
-    }
-
     bool SetMinimumGoalPathsCommand(ostream& sout, istream& sinput)
     {
         sinput >> _minimumgoalpaths;
         BOOST_ASSERT(_minimumgoalpaths>=0);
+        return !!sinput;
+    }
+
+    bool SetPostProcessingCommand(ostream& sout, istream& sinput)
+    {
+        if( !getline(sinput, _sPostProcessingParameters) ) {
+            return false;
+        }
         return !!sinput;
     }
 
@@ -1837,12 +1822,12 @@ protected:
     dReal _fMaxVelMult;
     list<SensorSystemBasePtr > listsystems;
     PlannerBasePtr _pRRTPlanner, _pGrasperPlanner;
-    list<pair<string,string> > _listSwitchModelPatterns;
-    list<SwitchModelContainerPtr> _listSwitchModels;
     TrajectoryBasePtr _phandtraj;
     vector<dReal> _vFinalGripperValues;
+    std::vector< std::vector<dReal> > _vcachedsolutions;
+    std::string _sPostProcessingParameters;
     int _minimumgoalpaths;
-    friend class SwitchModelState;
+    CollisionReportPtr _report;
 };
 
 ModuleBasePtr CreateTaskManipulation(EnvironmentBasePtr penv) {

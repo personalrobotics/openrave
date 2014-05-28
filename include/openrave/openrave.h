@@ -536,7 +536,7 @@ DefineRavePrintfA(_WARNLEVEL)
 DefineRavePrintfA(_DEBUGLEVEL)
 DefineRavePrintfA(_VERBOSELEVEL)
 
-#define RAVEPRINTHEADER(LEVEL) OpenRAVE::RavePrintfA ## LEVEL("[%s:%d] ", OpenRAVE::RaveGetSourceFilename(__FILE__), __LINE__)
+#define RAVEPRINTHEADER(LEVEL) OpenRAVE::RavePrintfA ## LEVEL("[%s:%d %s] ", OpenRAVE::RaveGetSourceFilename(__FILE__), __LINE__,  __FUNCTION__)
 
 // different logging levels. The higher the suffix number, the less important the information is.
 // 0 log level logs all the time. OpenRAVE starts up with a log level of 0.
@@ -680,6 +680,7 @@ typedef boost::shared_ptr<EnvironmentBase const> EnvironmentBaseConstPtr;
 typedef boost::weak_ptr<EnvironmentBase> EnvironmentBaseWeakPtr;
 
 typedef boost::shared_ptr<IkReturn> IkReturnPtr;
+typedef boost::shared_ptr<IkReturn const> IkReturnConstPtr;
 typedef boost::weak_ptr<IkReturn> IkReturnWeakPtr;
 
 class BaseXMLReader;
@@ -695,7 +696,9 @@ enum CloningOptions {
     Clone_Viewer = 2, ///< clone the viewer type, although figures won't be copied, new viewer does try to match views
     Clone_Simulation = 4, ///< clone the physics engine and simulation state (ie, timesteps, gravity)
     Clone_RealControllers = 8, ///< if specified, will clone the real controllers of all the robots, otherwise each robot gets ideal controller
-    Clone_Sensors = 16, ///< if specified, will clone the sensors attached to the robot and added to the environment
+    Clone_Sensors = 0x0010, ///< if specified, will clone the sensors attached to the robot and added to the environment
+    Clone_Modules = 0x0020, ///< if specified, will clone the modules attached to the environment
+    Clone_All = 0xffffffff,
 };
 
 /// base class for readable interfaces
@@ -1083,6 +1086,24 @@ protected:
      */
     virtual std::vector<Group>::const_iterator FindTimeDerivativeGroup(const std::string& name, bool exactmatch=false) const;
 
+    /** \brief Return the most compatible group that represents the time-integral data of the group.
+
+        For example given a 'joint_velocities' group, this will return the closest 'joint_values' group.
+        \param g the group to query, only the Group::name and Group::dof values are used
+        \param exactmatch if true, will only return groups whose name exactly matches with g.name
+        \return an iterator part of _vgroups that represents the most compatible group. If no group is found, will return _vgroups.end()
+     */
+    virtual std::vector<Group>::const_iterator FindTimeIntegralGroup(const Group& g, bool exactmatch=false) const;
+
+    /** \brief Return the most compatible group that represents the time-integral data of the group.
+
+        For example given a 'joint_velocities' group, this will return the closest 'joint_values' group.
+        \param name the name of the group to query
+        \param exactmatch if true, will only return groups whose name exactly matches with g.name
+        \return an iterator part of _vgroups that represents the most compatible group. If no group is found, will return _vgroups.end()
+     */
+    virtual std::vector<Group>::const_iterator FindTimeIntegralGroup(const std::string& name, bool exactmatch=false) const;
+
     /** \brief adds velocity, acceleration, etc groups for every position group.
 
         If the derivative groups already exist, they are checked for and/or modified. Note that the configuration space
@@ -1105,6 +1126,15 @@ protected:
         Only position specifications will be converted, any other groups will be left untouched.
      */
     virtual ConfigurationSpecification ConvertToVelocitySpecification() const;
+
+    /** \brief converts all the groups to the corresponding derivative group and returns the specification
+        
+        The new derivative configuration space will have a one-to-one correspondence with the original configuration.
+        The interpolation of each of the groups will correspondingly represent the derivative as returned by \ref GetInterpolationDerivative(deriv).
+        Only position specifications will be converted, any other groups will be left untouched.
+        \param timederivative the number of times to take the time derivative of the position
+     */
+    virtual ConfigurationSpecification ConvertToDerivativeSpecification(uint32_t timederivative=1) const;
 
     /// \brief returns a new specification of just particular time-derivative groups.
     ///
@@ -2184,6 +2214,12 @@ public:
         return iknew;
     }
 
+    inline void Swap(IkParameterization& r) {
+        std::swap(_transform, r._transform);
+        std::swap(_type, r._type);
+        _mapCustomData.swap(r._mapCustomData);
+    }
+
 protected:
     inline static bool _IsValidCharInName(char c) {
         return c < 0 || c >= 33;
@@ -2714,6 +2750,13 @@ OPENRAVE_API BaseXMLReaderPtr RaveCallXMLReader(InterfaceType type, const std::s
     \return an empty string if file isn't found, otherwise path to full filename on local filesystem
  */
 OPENRAVE_API std::string RaveFindLocalFile(const std::string& filename, const std::string& curdir="");
+
+/** \brief Given the absolute filename, return the relative path from one of the OPENRAVE_DATA directories.
+
+    Will check if filename is inside one of the OPENRAVE_DATA directories, and set newfilename to the relative path.
+    \return true if inside a OPENRAVE_DATA directory.
+ */
+OPENRAVE_API bool RaveInvertFileLookup(std::string& newfilename, const std::string& filename);
 
 /// \brief Sets the default data access options for cad resources/robot files
 ///

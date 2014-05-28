@@ -290,6 +290,50 @@ std::vector<ConfigurationSpecification::Group>::const_iterator ConfigurationSpec
     else if( name.size() >= 14 && name.substr(0,14) == "ikparam_values" ) {
         derivativename = string("ikparam_velocities") + name.substr(14);
     }
+    else if( name.size() >= 18 && name.substr(0,18) == "ikparam_velocities" ) {
+        derivativename = string("ikparam_accelerations") + name.substr(18);
+    }
+    else {
+        return _vgroups.end();
+    }
+    return FindCompatibleGroup(derivativename,exactmatch);
+}
+
+std::vector<ConfigurationSpecification::Group>::const_iterator ConfigurationSpecification::FindTimeIntegralGroup(const ConfigurationSpecification::Group& g, bool exactmatch) const
+{
+    std::vector<ConfigurationSpecification::Group>::const_iterator itcompatgroup = FindTimeIntegralGroup(g.name,exactmatch);
+    if( itcompatgroup != _vgroups.end() ) {
+        if( itcompatgroup->dof != g.dof ) {
+            return _vgroups.end();
+        }
+    }
+    return itcompatgroup;
+}
+
+std::vector<ConfigurationSpecification::Group>::const_iterator ConfigurationSpecification::FindTimeIntegralGroup(const std::string& name, bool exactmatch) const
+{
+    string derivativename;
+    if( name.size() >= 16 && name.substr(0,16) == "joint_velocities" ) {
+        derivativename = string("joint_values") + name.substr(16);
+    }
+    else if( name.size() >= 19 && name.substr(0,19) == "joint_accelerations" ) {
+        derivativename = string("joint_velocities") + name.substr(19);
+    }
+    else if( name.size() >= 11 && name.substr(0,11) == "joint_jerks" ) {
+        derivativename = string("joint_accelerations") + name.substr(11);
+    }
+    else if( name.size() >= 17 && name.substr(0,17) == "affine_velocities" ) {
+        derivativename = string("affine_transform") + name.substr(17);
+    }
+    else if( name.size() >= 20 && name.substr(0,20) == "affine_accelerations" ) {
+        derivativename = string("affine_velocities") + name.substr(20);
+    }
+    else if( name.size() >= 18 && name.substr(0,18) == "ikparam_velocities" ) {
+        derivativename = string("ikparam_values") + name.substr(18);
+    }
+    else if( name.size() >= 21 && name.substr(0,21) == "ikparam_accelerations" ) {
+        derivativename = string("ikparam_velocities") + name.substr(21);
+    }
     else {
         return _vgroups.end();
     }
@@ -385,6 +429,54 @@ ConfigurationSpecification ConfigurationSpecification::ConvertToVelocitySpecific
         itgroup->interpolation = GetInterpolationDerivative(itgroup->interpolation);
     }
     return vspec;
+}
+
+ConfigurationSpecification ConfigurationSpecification::ConvertToDerivativeSpecification(uint32_t timederivative) const
+{
+    OPENRAVE_ASSERT_OP(timederivative,<,4);
+    ConfigurationSpecification derivspec;
+    std::string searchname;
+    derivspec._vgroups = _vgroups;
+    if( timederivative > 0 ) {
+        FOREACH(itgroup,derivspec._vgroups) {
+            if( itgroup->name.size() >= 12 && itgroup->name.substr(0,12) == "joint_values" ) {
+                switch( timederivative ) {
+                case 0: searchname = "joint_values"; break;
+                case 1: searchname = "joint_velocities"; break;
+                case 2: searchname = "joint_accelerations"; break;
+                case 3: searchname = "joint_jerks"; break;
+                default:
+                    break;
+                }
+                itgroup->name = searchname + itgroup->name.substr(12);
+            }
+            else if( itgroup->name.size() >= 16 && itgroup->name.substr(0,16) == "affine_transform" ) {
+                switch( timederivative ) {
+                case 0: searchname = "affine_transform"; break;
+                case 1: searchname = "affine_velocities"; break;
+                case 2: searchname = "affine_accelerations"; break;
+                case 3: searchname = "affine_jerks"; break;
+                default:
+                    break;
+                }
+                itgroup->name = searchname + itgroup->name.substr(16);
+            }
+            else if( itgroup->name.size() >= 14 && itgroup->name.substr(0,14) == "ikparam_values" ) {
+                switch( timederivative ) {
+                case 0: searchname = "ikparam_values"; break;
+                case 1: searchname = "ikparam_velocities"; break;
+                case 2: searchname = "ikparam_accelerations"; break;
+                case 3: searchname = "ikparam_jerks"; break;
+                default:
+                    break;
+                }
+                itgroup->name = searchname + itgroup->name.substr(14);
+            }
+
+            itgroup->interpolation = GetInterpolationDerivative(itgroup->interpolation, timederivative);
+        }
+    }
+    return derivspec;
 }
 
 ConfigurationSpecification ConfigurationSpecification::GetTimeDerivativeSpecification(int timederivative) const

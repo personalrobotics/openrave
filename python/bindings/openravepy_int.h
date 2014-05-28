@@ -169,6 +169,19 @@ public:
 protected:
     PyThreadState *_save;
 };
+
+/// \brief release and restore the python GIL... no thread state saved..?
+class PythonGILSaver
+{
+public:
+    PythonGILSaver() {
+        PyEval_ReleaseLock();
+    }
+    virtual ~PythonGILSaver() {
+        PyEval_AcquireLock();
+    }
+};
+
 typedef boost::shared_ptr<PythonThreadSaver> PythonThreadSaverPtr;
 
 inline RaveVector<float> ExtractFloat3(const object& o)
@@ -274,7 +287,7 @@ inline RaveTransformMatrix<T> ExtractTransformMatrixType(const object& o)
 
 inline object toPyArrayRotation(const TransformMatrix& t)
 {
-    npy_intp dims[] = { 3,3};
+    npy_intp dims[] = {3,3};
     PyObject *pyvalues = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
     dReal* pdata = (dReal*)PyArray_DATA(pyvalues);
     pdata[0] = t.m[0]; pdata[1] = t.m[1]; pdata[2] = t.m[2];
@@ -285,7 +298,7 @@ inline object toPyArrayRotation(const TransformMatrix& t)
 
 inline object toPyArray3(const std::vector<RaveVector<float> >& v)
 {
-    npy_intp dims[] = { v.size(),3};
+    npy_intp dims[] = { npy_intp(v.size()), npy_intp(3) };
     PyObject *pyvalues = PyArray_SimpleNew(2,dims, PyArray_FLOAT);
     if( v.size() > 0 ) {
         float* pf = (float*)PyArray_DATA(pyvalues);
@@ -300,7 +313,7 @@ inline object toPyArray3(const std::vector<RaveVector<float> >& v)
 
 inline object toPyArray3(const std::vector<RaveVector<double> >& v)
 {
-    npy_intp dims[] = { v.size(),3};
+    npy_intp dims[] = { npy_intp(v.size()), npy_intp(3) };
     PyObject *pyvalues = PyArray_SimpleNew(2,dims, PyArray_DOUBLE);
     if( v.size() > 0 ) {
         double* pf = (double*)PyArray_DATA(pyvalues);
@@ -390,6 +403,16 @@ private:
     GraphHandlePtr _handle;
 };
 
+class PyEnvironmentLockSaver
+{
+public:
+    PyEnvironmentLockSaver(PyEnvironmentBasePtr pyenv, bool braw);
+    ~PyEnvironmentLockSaver();
+protected:
+    PyEnvironmentBasePtr _pyenv;
+};
+
+typedef boost::shared_ptr<PyEnvironmentLockSaver> PyEnvironmentLockSaverPtr;
 
 class PyUserData
 {
@@ -512,20 +535,7 @@ public:
     }
     object GetUserData(const std::string& key=std::string()) const;
 
-    object SendCommand(const string& in, bool releasegil=false) {
-        stringstream sin(in), sout;
-        {
-            openravepy::PythonThreadSaverPtr statesaver;
-            if( releasegil ) {
-                statesaver.reset(new openravepy::PythonThreadSaver());
-            }
-            sout << std::setprecision(std::numeric_limits<dReal>::digits10+1);     /// have to do this or otherwise precision gets lost
-            if( !_pbase->SendCommand(sout,sin) ) {
-                return object();
-            }
-        }
-        return object(sout.str());
-    }
+    object SendCommand(const string& in, bool releasegil=false, bool lockenv=false);
 
     virtual object GetReadableInterfaces();
     virtual object GetReadableInterface(const std::string& xmltag);
@@ -554,6 +564,19 @@ public:
         return _pbase;
     }
 };
+
+class PySensorGeometry
+{
+public:
+    virtual ~PySensorGeometry() {
+    }
+    virtual SensorBase::SensorType GetType()=0;
+    virtual SensorBase::SensorGeometryPtr GetGeometry()=0;
+};
+
+typedef boost::shared_ptr<PySensorGeometry> PySensorGeometryPtr;
+
+PySensorGeometryPtr toPySensorGeometry(SensorBase::SensorGeometryPtr);
 
 bool ExtractIkReturn(object o, IkReturn& ikfr);
 object toPyIkReturn(const IkReturn& ret);
@@ -626,6 +649,7 @@ void init_openravepy_trajectory();
 TrajectoryBasePtr GetTrajectory(object);
 TrajectoryBasePtr GetTrajectory(PyTrajectoryBasePtr);
 PyInterfaceBasePtr toPyTrajectory(TrajectoryBasePtr, PyEnvironmentBasePtr);
+object toPyTrajectory(TrajectoryBasePtr, object opyenv);
 PyEnvironmentBasePtr toPyEnvironment(PyTrajectoryBasePtr);
 // input can be class derived from PyInterfaceBase
 object toPyEnvironment(object opyinterface);

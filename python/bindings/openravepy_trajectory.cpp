@@ -104,7 +104,7 @@ public:
         vector<dReal> values;
         _ptrajectory->GetWaypoints(startindex,endindex,values);
         int numdof = _ptrajectory->GetConfigurationSpecification().GetDOF();
-        npy_intp dims[] = { values.size()/numdof, numdof };
+        npy_intp dims[] = { npy_intp(values.size()/numdof), npy_intp(numdof) };
         PyObject *pypos = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
         if( values.size() > 0 ) {
             memcpy(PyArray_DATA(pypos), &values[0], values.size()*sizeof(values[0]));
@@ -117,7 +117,7 @@ public:
         vector<dReal> values;
         ConfigurationSpecification spec = openravepy::GetConfigurationSpecification(pyspec);
         _ptrajectory->GetWaypoints(startindex,endindex,values,spec);
-        npy_intp dims[] = { values.size()/spec.GetDOF(), spec.GetDOF() };
+        npy_intp dims[] = { npy_intp(values.size()/spec.GetDOF()), npy_intp(spec.GetDOF()) };
         PyObject *pypos = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
         if( values.size() > 0 ) {
             memcpy(PyArray_DATA(pypos), &values[0], values.size()*sizeof(values[0]));
@@ -139,10 +139,14 @@ public:
         return toPyArray(values);
     }
 
+    size_t GetFirstWaypointIndexAfterTime(dReal time) const
+    {
+        return _ptrajectory->GetFirstWaypointIndexAfterTime(time);
+    }
+
     dReal GetDuration() const {
         return _ptrajectory->GetDuration();
     }
-
 
     PyTrajectoryBasePtr deserialize(const string& s)
     {
@@ -194,6 +198,15 @@ PyInterfaceBasePtr toPyTrajectory(TrajectoryBasePtr ptrajectory, PyEnvironmentBa
     return !ptrajectory ? PyInterfaceBasePtr() : PyInterfaceBasePtr(new PyTrajectoryBase(ptrajectory,pyenv));
 }
 
+object toPyTrajectory(TrajectoryBasePtr ptraj, object opyenv)
+{
+    extract<PyEnvironmentBasePtr> pyenv(opyenv);
+    if( pyenv.check() ) {
+        return object(toPyTrajectory(ptraj,(PyEnvironmentBasePtr)pyenv));
+    }
+    return object();
+}
+
 PyEnvironmentBasePtr toPyEnvironment(PyTrajectoryBasePtr pytraj)
 {
     return pytraj->GetEnv();
@@ -241,6 +254,7 @@ void init_openravepy_trajectory()
     .def("GetWaypoints2D",GetWaypoints2D2,args("startindex","endindex","spec"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector, const ConfigurationSpecification&"))
     .def("GetWaypoint",GetWaypoint1,args("index"),DOXY_FN(TrajectoryBase, GetWaypoint "int; std::vector"))
     .def("GetWaypoint",GetWaypoint2,args("index","spec"),DOXY_FN(TrajectoryBase, GetWaypoint "int; std::vector; const ConfigurationSpecification"))
+    .def("GetFirstWaypointIndexAfterTime",&PyTrajectoryBase::GetFirstWaypointIndexAfterTime, DOXY_FN(TrajectoryBase, GetFirstWaypointIndexAfterTime))
     .def("GetDuration",&PyTrajectoryBase::GetDuration,DOXY_FN(TrajectoryBase, GetDuration))
     .def("serialize",&PyTrajectoryBase::serialize,serialize_overloads(args("options"),DOXY_FN(TrajectoryBase,serialize)))
     .def("deserialize",&PyTrajectoryBase::deserialize,args("data"),DOXY_FN(TrajectoryBase,deserialize))

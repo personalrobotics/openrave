@@ -278,6 +278,7 @@ public:
         _vXMLParameters.push_back("ffinestep");
         _vXMLParameters.push_back("ftranslationstepmult");
         _vXMLParameters.push_back("fgraspingnoise");
+        _vXMLParameters.push_back("vintersectplane");
         _bProcessingGrasp = false;
     }
 
@@ -297,8 +298,9 @@ public:
     dReal fcoarsestep;      ///< step for coarse planning (in radians)
     dReal ffinestep;     ///< step for fine planning (in radians), THIS STEP MUST BE VERY SMALL OR THE COLLISION CHECKER GIVES WILDLY BOGUS RESULTS
     dReal ftranslationstepmult;     ///< multiplication factor for translational movements of the hand or joints
-
     dReal fgraspingnoise;     ///< random undeterministic noise to add to the target object, represents the max possible displacement of any point on the object (noise added after global direction and start have been determined)
+    Vector vintersectplane; ///< if norm > 0, then the manipulator transform has to be on the plane for grabbing to work. This is mutually exclusive from the standoff.
+
 protected:
     EnvironmentBasePtr _penv;     ///< environment target belongs to
     bool _bProcessingGrasp;
@@ -328,6 +330,7 @@ protected:
         O << "<ffinestep>" << ffinestep << "</ffinestep>" << std::endl;
         O << "<ftranslationstepmult>" << ftranslationstepmult << "</ftranslationstepmult>" << std::endl;
         O << "<fgraspingnoise>" << fgraspingnoise << "</fgraspingnoise>" << std::endl;
+        O << "<vintersectplane>" << vintersectplane << "</vintersectplane>" << std::endl;
         if( !(options & 1) ) {
             O << _sExtraParameters << std::endl;
         }
@@ -349,7 +352,7 @@ protected:
             return PE_Support;
         }
 
-        static boost::array<std::string,16> tags = {{"fstandoff","targetbody","ftargetroll","vtargetdirection","vtargetposition","vmanipulatordirection", "btransformrobot","breturntrajectory","bonlycontacttarget","btightgrasp","bavoidcontact","vavoidlinkgeometry","fcoarsestep","ffinestep","ftranslationstepmult","fgraspingnoise"}};
+        static boost::array<std::string,17> tags = {{"fstandoff","targetbody","ftargetroll","vtargetdirection","vtargetposition","vmanipulatordirection", "btransformrobot","breturntrajectory","bonlycontacttarget","btightgrasp","bavoidcontact","vavoidlinkgeometry","fcoarsestep","ffinestep","ftranslationstepmult","fgraspingnoise","vintersectplane"}};
         _bProcessingGrasp = find(tags.begin(),tags.end(),name) != tags.end();
         return _bProcessingGrasp ? PE_Support : PE_Pass;
     }
@@ -410,6 +413,9 @@ protected:
             else if( name == "ftranslationstepmult" ) {
                 _ss >> ftranslationstepmult;
             }
+            else if( name == "vintersectplane" ) {
+                _ss >> vintersectplane;
+            }
             else {
                 RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));
             }
@@ -432,7 +438,7 @@ typedef boost::shared_ptr<GraspParameters const> GraspParametersConstPtr;
 class OPENRAVE_API TrajectoryTimingParameters : public PlannerBase::PlannerParameters
 {
 public:
-    TrajectoryTimingParameters() : _interpolation(""), _pointtolerance(0.2), _hastimestamps(false), _hasvelocities(false), _outputaccelchanges(true), _multidofinterp(0), _bProcessing(false) {
+    TrajectoryTimingParameters() : _interpolation(""), _pointtolerance(0.2), _hastimestamps(false), _hasvelocities(false), _outputaccelchanges(true), _multidofinterp(0), verifyinitialpath(1), _bProcessing(false) {
         _fStepLength = 0; // reset to 0 since it is being used
         _vXMLParameters.push_back("interpolation");
         _vXMLParameters.push_back("hastimestamps");
@@ -440,6 +446,7 @@ public:
         _vXMLParameters.push_back("pointtolerance");
         _vXMLParameters.push_back("outputaccelchanges");
         _vXMLParameters.push_back("multidofinterp");
+        _vXMLParameters.push_back("verifyinitialpath");
     }
 
     std::string _interpolation;
@@ -447,6 +454,7 @@ public:
     bool _hastimestamps, _hasvelocities;
     bool _outputaccelchanges; ///< if true, will output a waypoint every time a DOF changes its acceleration, this allows a trajectory be executed without knowing the max velocities/accelerations. If false, will just output the waypoints.
     int _multidofinterp; ///< if 1, will always force the max acceleration of the robot when retiming rather than using lesser acceleration whenever possible. if 0, will compute minimum acceleration. If 2, will match acceleration ramps of all dofs.
+    int verifyinitialpath; ///< if 0 then does not verify whether the path given as input is in collision
 
 protected:
     bool _bProcessing;
@@ -461,6 +469,7 @@ protected:
         O << "<pointtolerance>" << _pointtolerance << "</pointtolerance>" << std::endl;
         O << "<outputaccelchanges>" << _outputaccelchanges << "</outputaccelchanges>" << std::endl;
         O << "<multidofinterp>" << _multidofinterp << "</multidofinterp>" << std::endl;
+        O << "<verifyinitialpath>" << verifyinitialpath  << "</verifyinitialpath>" << std::endl;
         if( !(options & 1) ) {
             O << _sExtraParameters << std::endl;
         }
@@ -479,7 +488,7 @@ protected:
         case PE_Ignore: return PE_Ignore;
         }
 
-        _bProcessing = name=="interpolation" || name=="hastimestamps" || name=="hasvelocities" || name=="pointtolerance" || name=="outputaccelchanges" || name=="multidofinterp";
+        _bProcessing = name=="interpolation" || name=="hastimestamps" || name=="hasvelocities" || name=="pointtolerance" || name=="outputaccelchanges" || name=="multidofinterp"||name=="verifyinitialpath";
         return _bProcessing ? PE_Support : PE_Pass;
     }
 
@@ -504,6 +513,9 @@ protected:
             else if( name == "multidofinterp" ) {
                 _ss >> _multidofinterp;
             }
+            else if( name == "verifyinitialpath") {
+                _ss >> verifyinitialpath;
+            }
             else {
                 RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));
             }
@@ -522,7 +534,7 @@ typedef boost::shared_ptr<TrajectoryTimingParameters const> TrajectoryTimingPara
 class OPENRAVE_API ConstraintTrajectoryTimingParameters : public TrajectoryTimingParameters
 {
 public:
-    ConstraintTrajectoryTimingParameters() : TrajectoryTimingParameters(), maxlinkspeed(0), maxlinkaccel(0), maxmanipspeed(0), maxmanipaccel(0), mingripperdistance(0), velocitydistancethresh(0), maxmergeiterations(1000), minswitchtime(0.2),nshortcutcycles(1), verifyinitialpath(1), _bCProcessing(false) {
+    ConstraintTrajectoryTimingParameters() : TrajectoryTimingParameters(), maxlinkspeed(0), maxlinkaccel(0), maxmanipspeed(0), maxmanipaccel(0), mingripperdistance(0), velocitydistancethresh(0), maxmergeiterations(1000), minswitchtime(0.2),nshortcutcycles(1), _bCProcessing(false) {
         _vXMLParameters.push_back("maxlinkspeed");
         _vXMLParameters.push_back("maxlinkaccel");
         _vXMLParameters.push_back("maxmanipspeed");
@@ -532,7 +544,6 @@ public:
         _vXMLParameters.push_back("maxmergeiterations");
         _vXMLParameters.push_back("minswitchtime");
         _vXMLParameters.push_back("nshortcutcycles");
-        _vXMLParameters.push_back("verifyinitialpath");
     }
 
     dReal maxlinkspeed; ///< max speed in m/s that any point on any link goes. 0 means no speed limit
@@ -546,7 +557,7 @@ public:
     int maxmergeiterations; ///< when merging several ramps together, the order that they are merged in depends. This parameters pecifies how many permutations to test before giving up.
     dReal minswitchtime; ///< the minimum time between switching accelerations of any joint (waypoints).
     int nshortcutcycles; ///< number of times the shortcut cycle is repeted.
-    int verifyinitialpath; ///< if 0 then does not verify whether the path given as input is in collision
+
 
 protected:
     bool _bCProcessing;
@@ -564,7 +575,6 @@ protected:
         O << "<maxmergeiterations>" << maxmergeiterations << "</maxmergeiterations>" << std::endl;
         O << "<minswitchtime>" << minswitchtime << "</minswitchtime>" << std::endl;
         O << "<nshortcutcycles>" << nshortcutcycles << "</nshortcutcycles>" << std::endl;
-        O << "<verifyinitialpath>" << verifyinitialpath  << "</verifyinitialpath>" << std::endl;
         if( !(options & 1) ) {
             O << _sExtraParameters << std::endl;
         }
@@ -582,7 +592,7 @@ protected:
         case PE_Support: return PE_Support;
         case PE_Ignore: return PE_Ignore;
         }
-        _bCProcessing = name=="maxlinkspeed" || name =="maxlinkaccel" || name=="maxmanipspeed" || name =="maxmanipaccel" || name=="mingripperdistance" || name=="velocitydistancethresh" || name=="maxmergeiterations" || name=="minswitchtime"|| name=="nshortcutcycles"|| name=="verifyinitialpath";
+        _bCProcessing = name=="maxlinkspeed" || name =="maxlinkaccel" || name=="maxmanipspeed" || name =="maxmanipaccel" || name=="mingripperdistance" || name=="velocitydistancethresh" || name=="maxmergeiterations" || name=="minswitchtime"|| name=="nshortcutcycles";
         return _bCProcessing ? PE_Support : PE_Pass;
     }
 
@@ -615,9 +625,6 @@ protected:
             }
             else if( name == "nshortcutcycles") {
                 _ss >> nshortcutcycles;
-            }
-            else if( name == "verifyinitialpath") {
-                _ss >> verifyinitialpath;
             }
             else {
                 RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));

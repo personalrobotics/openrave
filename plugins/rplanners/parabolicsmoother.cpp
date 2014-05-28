@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Copyright (C) 2012-2013 Rosen Diankov <rosen.diankov@gmail.com>
+// Copyright (C) 2012-2014 Rosen Diankov <rosen.diankov@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -13,7 +13,7 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#include "plugindefs.h"
+#include "openraveplugindefs.h"
 #include <fstream>
 
 #include <openrave/planningutils.h>
@@ -71,6 +71,8 @@ public:
             return PS_Failed;
         }
 
+        _DumpTrajectory(ptraj, Level_Verbose);
+
         // save velocities
         std::vector<KinBody::KinBodyStateSaverPtr> vstatesavers;
         std::vector<KinBodyPtr> vusedbodies;
@@ -91,52 +93,104 @@ public:
         }
 
         uint32_t basetime = utils::GetMilliTime();
+        ConfigurationSpecification posspec = _parameters->_configurationspecification;
+        ConfigurationSpecification velspec = posspec.ConvertToVelocitySpecification();
+        ConfigurationSpecification timespec;
+        timespec.AddDeltaTimeGroup();
+
+        std::vector<ConfigurationSpecification::Group>::const_iterator itcompatposgroup = ptraj->GetConfigurationSpecification().FindCompatibleGroup(posspec._vgroups.at(0), false);
+        OPENRAVE_ASSERT_FORMAT(itcompatposgroup != ptraj->GetConfigurationSpecification()._vgroups.end(), "failed to find group %s in passed in trajectory", posspec._vgroups.at(0).name, ORE_InvalidArguments);
+
         TrajectoryTimingParametersConstPtr parameters = boost::dynamic_pointer_cast<TrajectoryTimingParameters const>(GetParameters());
 
-        vector<ParabolicRamp::Vector> path;
-        path.reserve(ptraj->GetNumWaypoints());
-        vector<dReal> vtrajpoints;
-        ptraj->GetWaypoints(0,ptraj->GetNumWaypoints(),vtrajpoints,_parameters->_configurationspecification);
+        ParabolicRamp::DynamicPath dynamicpath;
+        dynamicpath.Init(parameters->_vConfigVelocityLimit,parameters->_vConfigAccelerationLimit);
+        dynamicpath._multidofinterp = _parameters->_multidofinterp;
+        dynamicpath.SetJointLimits(parameters->_vConfigLowerLimit,parameters->_vConfigUpperLimit);
+
         ParabolicRamp::Vector q(_parameters->GetDOF());
-        for(size_t i = 0; i < ptraj->GetNumWaypoints(); ++i) {
-            std::copy(vtrajpoints.begin()+i*_parameters->GetDOF(),vtrajpoints.begin()+(i+1)*_parameters->GetDOF(),q.begin());
-            if( path.size() >= 2 ) {
-                // check if collinear by taking angle
-                const ParabolicRamp::Vector& x0 = path[path.size()-2];
-                const ParabolicRamp::Vector& x1 = path[path.size()-1];
-                dReal dotproduct=0,x0length2=0,x1length2=0;
-                for(size_t i = 0; i < q.size(); ++i) {
-                    dReal dx0=x0[i]-q[i];
-                    dReal dx1=x1[i]-q[i];
-                    dotproduct += dx0*dx1;
-                    x0length2 += dx0*dx0;
-                    x1length2 += dx1*dx1;
+        vector<dReal> vtrajpoints;
+        if (_parameters->_hastimestamps && itcompatposgroup->interpolation == "quadratic" ) {
+            RAVELOG_VERBOSE("Initial traj is piecewise quadratic\n");
+            // assumes that the traj has velocity data and is consistent, so convert the original trajectory in a sequence of ramps, and preserve velocity
+            vector<dReal> x0, x1, dx0, dx1, ramptime;
+            ptraj->GetWaypoint(0,x0,posspec);
+            ptraj->GetWaypoint(0,dx0,velspec);
+            dynamicpath.ramps.resize(ptraj->GetNumWaypoints()-1);
+            size_t iramp = 0;
+            for(size_t i=0; i+1<ptraj->GetNumWaypoints(); i++) {
+                ptraj->GetWaypoint(i+1,ramptime,timespec);
+                if (ramptime.at(0) > g_fEpsilonLinear) {
+                    ptraj->GetWaypoint(i+1,x1,posspec);
+                    ptraj->GetWaypoint(i+1,dx1,velspec);
+                    dynamicpath.ramps[iramp].SetPosVelTime(x0,dx0,x1,dx1,ramptime.at(0));
+                    x0.swap(x1);
+                    dx0.swap(dx1);
+                    iramp += 1;
                 }
-                if( RaveFabs(dotproduct * dotproduct - x0length2*x1length2) < 100*ParabolicRamp::EpsilonX*ParabolicRamp::EpsilonX ) {
-                    path.back() = q;
-                    continue;
-                }
+//                else {
+//                    RAVELOG_WARN("there is no ramp time, so making a linear ramp\n");
+//                    dynamicpath.ramps[i].x0 = x0;
+//                    dynamicpath.ramps[i].dx0 = dx0;
+//                    ptraj->GetWaypoint(i+1,dynamicpath.ramps[i].x1,posspec);
+//                    ptraj->GetWaypoint(i+1,dynamicpath.ramps[i].dx1,velspec);
+//                    bool res=dynamicpath.ramps[i].SolveMinTimeLinear(_parameters->_vConfigAccelerationLimit, _parameters->_vConfigVelocityLimit);
+//                    PARABOLIC_RAMP_ASSERT(res && dynamicpath.ramps[i].IsValid());
+//                    x0 = dynamicpath.ramps[i].x1;
+//                    dx0 = dynamicpath.ramps[i].dx0;
+//                }
             }
-            // check if the point is not the same as the previous point
-            if( path.size() > 0 ) {
-                dReal d = 0;
-                for(size_t i = 0; i < q.size(); ++i) {
-                    d += RaveFabs(q[i]-path.back().at(i));
-                }
-                if( d <= q.size()*std::numeric_limits<dReal>::epsilon() ) {
-                    continue;
-                }
-            }
-            path.push_back(q);
+            dynamicpath.ramps.resize(iramp);
         }
+        else {
+            vector<ParabolicRamp::Vector> path;
+            path.reserve(ptraj->GetNumWaypoints());
+            // linear piecewise trajectory
+            ptraj->GetWaypoints(0,ptraj->GetNumWaypoints(),vtrajpoints,_parameters->_configurationspecification);
+            for(size_t i = 0; i < ptraj->GetNumWaypoints(); ++i) {
+                std::copy(vtrajpoints.begin()+i*_parameters->GetDOF(),vtrajpoints.begin()+(i+1)*_parameters->GetDOF(),q.begin());
+                if( path.size() >= 2 ) {
+                    // check if collinear by taking angle
+                    const ParabolicRamp::Vector& x0 = path[path.size()-2];
+                    const ParabolicRamp::Vector& x1 = path[path.size()-1];
+                    dReal dotproduct=0,x0length2=0,x1length2=0;
+                    for(size_t i = 0; i < q.size(); ++i) {
+                        dReal dx0=x0[i]-q[i];
+                        dReal dx1=x1[i]-q[i];
+                        dotproduct += dx0*dx1;
+                        x0length2 += dx0*dx0;
+                        x1length2 += dx1*dx1;
+                    }
+                    if( RaveFabs(dotproduct * dotproduct - x0length2*x1length2) < 100*ParabolicRamp::EpsilonX*ParabolicRamp::EpsilonX ) {
+                        path.back() = q;
+                        continue;
+                    }
+                }
+                // check if the point is not the same as the previous point
+                if( path.size() > 0 ) {
+                    dReal d = 0;
+                    for(size_t i = 0; i < q.size(); ++i) {
+                        d += RaveFabs(q[i]-path.back().at(i));
+                    }
+                    if( d <= q.size()*std::numeric_limits<dReal>::epsilon() ) {
+                        continue;
+                    }
+                }
+                path.push_back(q);
+            }
+            dynamicpath.SetMilestones(path);   //now the trajectory starts and stops at every milestone
+        }
+
+        if( !_parameters->verifyinitialpath ) {
+            // disable verification
+            FOREACH(itramp, dynamicpath.ramps) {
+                itramp->constraintchecked = 1;
+            }
+        }
+
         try {
             _bUsePerturbation = true;
-            ParabolicRamp::DynamicPath dynamicpath;
-            dynamicpath.Init(parameters->_vConfigVelocityLimit,parameters->_vConfigAccelerationLimit);
-            dynamicpath._multidofinterp = _parameters->_multidofinterp;
-            dynamicpath.SetJointLimits(parameters->_vConfigLowerLimit,parameters->_vConfigUpperLimit);
-            dynamicpath.SetMilestones(path);   //now the trajectory starts and stops at every milestone
-            RAVELOG_DEBUG(str(boost::format("initial path size=%d, duration=%f, pointtolerance=%f, multidof=%d")%path.size()%dynamicpath.GetTotalTime()%parameters->_pointtolerance%_parameters->_multidofinterp));
+            RAVELOG_DEBUG(str(boost::format("initial path size=%d, duration=%f, pointtolerance=%f, multidof=%d")%dynamicpath.ramps.size()%dynamicpath.GetTotalTime()%parameters->_pointtolerance%_parameters->_multidofinterp));
             ParabolicRamp::Vector tol = parameters->_vConfigResolution;
             FOREACH(it,tol) {
                 *it *= parameters->_pointtolerance;
@@ -159,9 +213,7 @@ public:
                 return PS_Interrupted;
             }
 
-            ConfigurationSpecification oldspec = parameters->_configurationspecification;
-            ConfigurationSpecification velspec = oldspec.ConvertToVelocitySpecification();
-            ConfigurationSpecification newspec = oldspec;
+            ConfigurationSpecification newspec = posspec;
             newspec.AddDerivativeGroups(1,true);
             int waypointoffset = newspec.AddGroup("iswaypoint", 1, "next");
 
@@ -173,7 +225,7 @@ public:
                 else if( velspec.FindCompatibleGroup(*itgroup) != velspec._vgroups.end() ) {
                     itgroup->interpolation = "linear";
                 }
-                else if( oldspec.FindCompatibleGroup(*itgroup) != oldspec._vgroups.end() ) {
+                else if( posspec.FindCompatibleGroup(*itgroup) != posspec._vgroups.end() ) {
                     itgroup->interpolation = "quadratic";
                 }
             }
@@ -186,7 +238,7 @@ public:
 
             // separate all the acceleration switches into individual points
             vtrajpoints.resize(newspec.GetDOF());
-            ConfigurationSpecification::ConvertData(vtrajpoints.begin(),newspec,dynamicpath.ramps.at(0).x0.begin(),oldspec,1,GetEnv(),true);
+            ConfigurationSpecification::ConvertData(vtrajpoints.begin(),newspec,dynamicpath.ramps.at(0).x0.begin(), posspec,1,GetEnv(),true);
             ConfigurationSpecification::ConvertData(vtrajpoints.begin(),newspec,dynamicpath.ramps.at(0).dx0.begin(),velspec,1,GetEnv(),false);
             vtrajpoints.at(waypointoffset) = 1;
             vtrajpoints.at(timeoffset) = 0;
@@ -194,27 +246,61 @@ public:
             vector<dReal> vswitchtimes;
             ParabolicRamp::Vector vconfig;
             std::vector<ParabolicRamp::ParabolicRampND> temprampsnd;
+            ParabolicRamp::ParabolicRampND rampndtrimmed;
+            dReal fTrimEdgesTime = parameters->_fStepLength*2; // 2 controller timesteps is enough?
             for(size_t irampindex = 0; irampindex < dynamicpath.ramps.size(); ++irampindex) {
                 const ParabolicRamp::ParabolicRampND& rampnd = dynamicpath.ramps[irampindex];
                 temprampsnd.resize(1);
                 temprampsnd[0] = rampnd;
                 // double-check the current ramps, ignore first and last ramps since they connect to the initial and goal positions, and those most likely they cannot be fixed .
-                if(!rampnd.constraintchecked && (irampindex > 0 && irampindex+1 < dynamicpath.ramps.size()) ) {
-                    // part of original trajectory which might not have been processed with perterbations, so ignore them
+                if(!rampnd.constraintchecked ) {
+                    //(irampindex > 0 && irampindex+1 < dynamicpath.ramps.size())
+                    rampndtrimmed = rampnd;
+                    bool bTrimmed = false;
+                    bool bCheck = true;
+                    if( irampindex == 0 ) {
+                        if( rampnd.endTime <= fTrimEdgesTime+g_fEpsilonLinear ) {
+                            // ramp is too short so ignore checking
+                            bCheck = false;
+                        }
+                        else {
+                            // don't check points close to the initial configuration because of jittering
+                            rampndtrimmed.TrimFront(fTrimEdgesTime);
+                            bTrimmed = true;
+                        }
+                    }
+                    else if( irampindex+1 == dynamicpath.ramps.size() ) {
+                        if( rampnd.endTime <= fTrimEdgesTime+g_fEpsilonLinear ) {
+                            // ramp is too short so ignore checking
+                            bCheck = false;
+                        }
+                        else {
+                            // don't check points close to the final configuration because of jittering
+                            rampndtrimmed.TrimBack(fTrimEdgesTime);
+                            bTrimmed = true;
+                        }
+                    }
+                    // part of original trajectory which might not have been processed with perturbations, so ignore perturbations
                     _bUsePerturbation = false;
-                    if( !checker.Check(rampnd)) {
+                    if( bCheck && !checker.Check(rampndtrimmed)) {
                         std::vector<std::vector<ParabolicRamp::ParabolicRamp1D> > tempramps1d;
                         // try to time scale, perhaps collision and dynamics will change
                         // go all the way up to 2.0 multiplier: 1.05*1.1*1.15*1.2*1.25 ~= 2
                         bool bSuccess = false;
                         dReal mult = 1.05;
-                        dReal endTime = rampnd.endTime;
+                        dReal endTime = rampndtrimmed.endTime;
                         for(size_t idilate = 0; idilate < 5; ++idilate ) {
                             tempramps1d.resize(0);
                             endTime *= mult;
-                            if( ParabolicRamp::SolveAccelBounded(rampnd.x0, rampnd.dx0, rampnd.x1, rampnd.dx1, endTime,  parameters->_vConfigAccelerationLimit, parameters->_vConfigVelocityLimit, parameters->_vConfigLowerLimit, parameters->_vConfigUpperLimit, tempramps1d, _parameters->_multidofinterp) ) {
+                            if( ParabolicRamp::SolveAccelBounded(rampndtrimmed.x0, rampndtrimmed.dx0, rampndtrimmed.x1, rampndtrimmed.dx1, endTime,  parameters->_vConfigAccelerationLimit, parameters->_vConfigVelocityLimit, parameters->_vConfigLowerLimit, parameters->_vConfigUpperLimit, tempramps1d, _parameters->_multidofinterp) ) {
                                 temprampsnd.resize(0);
                                 CombineRamps(tempramps1d, temprampsnd);
+                                if( irampindex == 0 ) {
+                                    temprampsnd[0].TrimFront(fTrimEdgesTime);
+                                }
+                                else if( irampindex+1 == dynamicpath.ramps.size() ) {
+                                    temprampsnd[0].TrimBack(fTrimEdgesTime);
+                                }
                                 bool bHasBadRamp=false;
                                 FOREACH(itnewrampnd, temprampsnd) {
                                     if( !checker.Check(*itnewrampnd) ) {
@@ -223,15 +309,24 @@ public:
                                     }
                                 }
                                 if( !bHasBadRamp ) {
+                                    if( bTrimmed ) {
+                                        // have to retime the original ramp without trimming
+                                        if( !ParabolicRamp::SolveAccelBounded(rampnd.x0, rampnd.dx0, rampnd.x1, rampnd.dx1, endTime,  parameters->_vConfigAccelerationLimit, parameters->_vConfigVelocityLimit, parameters->_vConfigLowerLimit, parameters->_vConfigUpperLimit, tempramps1d, _parameters->_multidofinterp) ) {
+                                            break;
+                                        }
+                                        temprampsnd.resize(0);
+                                        CombineRamps(tempramps1d, temprampsnd);
+                                    }
                                     bSuccess = true;
-                                    temprampsnd = temprampsnd;
                                     break;
                                 }
                                 mult += 0.05;
                             }
                         }
                         if( !bSuccess ) {
-                            throw OPENRAVE_EXCEPTION_FORMAT0("original ramp is in collision!", ORE_Assert);
+                            RAVELOG_WARN_FORMAT("original ramp %d is in collision!", irampindex);
+                            _DumpTrajectory(ptraj, Level_Verbose);
+                            return PS_Failed;
                         }
                     }
                     _bUsePerturbation = true; // re-enable
@@ -243,20 +338,26 @@ public:
 
                 FOREACH(itrampnd2, temprampsnd) {
                     vswitchtimes.resize(0);
-                    vswitchtimes.push_back(rampnd.endTime);
+                    vswitchtimes.push_back(itrampnd2->endTime);
                     if( _parameters->_outputaccelchanges ) {
-                        FOREACHC(itramp,rampnd.ramps) {
+                        FOREACHC(itramp,itrampnd2->ramps) {
                             vector<dReal>::iterator it;
                             if( itramp->tswitch1 != 0 ) {
                                 it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),itramp->tswitch1);
-                                if( *it != itramp->tswitch1) {
+                                if( it != vswitchtimes.end() && *it != itramp->tswitch1) {
                                     vswitchtimes.insert(it,itramp->tswitch1);
                                 }
                             }
                             if( itramp->tswitch1 != itramp->tswitch2 && itramp->tswitch2 != 0 ) {
                                 it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),itramp->tswitch2);
-                                if( *it != itramp->tswitch2 ) {
+                                if( it != vswitchtimes.end() && *it != itramp->tswitch2 ) {
                                     vswitchtimes.insert(it,itramp->tswitch2);
+                                }
+                            }
+                            if( itramp->ttotal != itramp->tswitch2 && itramp->ttotal != 0 ) {
+                                it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),itramp->ttotal);
+                                if( it != vswitchtimes.end() && *it != itramp->ttotal ) {
+                                    vswitchtimes.insert(it,itramp->ttotal);
                                 }
                             }
                         }
@@ -266,7 +367,7 @@ public:
                     dReal prevtime = 0;
                     for(size_t i = 0; i < vswitchtimes.size(); ++i) {
                         rampnd.Evaluate(vswitchtimes[i],vconfig);
-                        ConfigurationSpecification::ConvertData(ittargetdata,newspec,vconfig.begin(),oldspec,1,GetEnv(),true);
+                        ConfigurationSpecification::ConvertData(ittargetdata,newspec,vconfig.begin(),posspec,1,GetEnv(),true);
                         rampnd.Derivative(vswitchtimes[i],vconfig);
                         ConfigurationSpecification::ConvertData(ittargetdata,newspec,vconfig.begin(),velspec,1,GetEnv(),false);
                         *(ittargetdata+timeoffset) = vswitchtimes[i]-prevtime;
@@ -278,24 +379,16 @@ public:
                 }
             }
 
-            BOOST_ASSERT(RaveFabs(dynamicpath.GetTotalTime()-_dummytraj->GetDuration())<0.001);
+            OPENRAVE_ASSERT_OP(RaveFabs(dynamicpath.GetTotalTime()-_dummytraj->GetDuration()),<,0.001);
             RAVELOG_DEBUG(str(boost::format("after shortcutting %d times: path waypoints=%d, traj waypoints=%d, traj time=%fs")%numshortcuts%dynamicpath.ramps.size()%_dummytraj->GetNumWaypoints()%dynamicpath.GetTotalTime()));
             ptraj->Swap(_dummytraj);
         }
         catch (const std::exception& ex) {
-            if( IS_DEBUGLEVEL(Level_Verbose) ) {
-                string filename = str(boost::format("%s/failedsmoothing%d.xml")%RaveGetHomeDirectory()%(RaveRandomInt()%10000));
-                RAVELOG_WARN(str(boost::format("parabolic planner failed: %s, writing original trajectory to %s")%ex.what()%filename));
-                ofstream f(filename.c_str());
-                f << std::setprecision(std::numeric_limits<dReal>::digits10+1);
-                ptraj->serialize(f);
-            }
-            else {
-                RAVELOG_WARN(str(boost::format("parabolic planner failed: %s")%ex.what()));
-            }
+            _DumpTrajectory(ptraj, Level_Verbose);
+            RAVELOG_WARN_FORMAT("parabolic planner failed: %s", ex.what());
             return PS_Failed;
         }
-        RAVELOG_DEBUG(str(boost::format("path optimizing - computation time=%fs\n")%(0.001f*(float)(utils::GetMilliTime()-basetime))));
+        RAVELOG_DEBUG_FORMAT("path optimizing - computation time=%fs\n", (0.001f*(float)(utils::GetMilliTime()-basetime)));
         return _ProcessPostPlanners(RobotBasePtr(),ptraj);
     }
 
@@ -333,6 +426,26 @@ public:
     }
 
 protected:
+    std::string _DumpTrajectory(TrajectoryBasePtr traj, DebugLevel level)
+    {
+        if( IS_DEBUGLEVEL(level) ) {
+            std::string filename = _DumpTrajectory(traj);
+            RavePrintfA(str(boost::format("wrote parabolicsmoothing trajectory to %s")%filename), level);
+            return filename;
+        }
+        return std::string();
+    }
+
+    std::string _DumpTrajectory(TrajectoryBasePtr traj)
+    {
+        // store the trajectory
+        string filename = str(boost::format("%s/parabolicsmoother%d.traj.xml")%RaveGetHomeDirectory()%(RaveRandomInt()%1000));
+        ofstream f(filename.c_str());
+        f << std::setprecision(std::numeric_limits<dReal>::digits10+1);     /// have to do this or otherwise precision gets lost
+        traj->serialize(f);
+        return filename;
+    }
+
     TrajectoryTimingParametersPtr _parameters;
     SpaceSamplerBasePtr _uniformsampler;
     bool _bUsePerturbation;

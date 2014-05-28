@@ -277,17 +277,19 @@ public:
                 return PS_Failed;
             }
 
-            if( _parameters->fstandoff > 0 ) {
-                dReal* pX = NULL, *pY = NULL, *pZ = NULL;
-                if( _robot->GetAffineDOF() & DOF_X ) {
-                    pX = &dofvals.at(_robot->GetAffineDOFIndex(DOF_X));
-                }
-                if( _robot->GetAffineDOF() & DOF_Y ) {
-                    pY = &dofvals.at(_robot->GetAffineDOFIndex(DOF_Y));
-                }
-                if( _robot->GetAffineDOF() & DOF_Z ) {
-                    pZ = &dofvals.at(_robot->GetAffineDOFIndex(DOF_Z));
-                }
+            dReal* pX = NULL, *pY = NULL, *pZ = NULL;
+            if( _robot->GetAffineDOF() & DOF_X ) {
+                pX = &dofvals.at(_robot->GetAffineDOFIndex(DOF_X));
+            }
+            if( _robot->GetAffineDOF() & DOF_Y ) {
+                pY = &dofvals.at(_robot->GetAffineDOFIndex(DOF_Y));
+            }
+            if( _robot->GetAffineDOF() & DOF_Z ) {
+                pZ = &dofvals.at(_robot->GetAffineDOFIndex(DOF_Z));
+            }
+
+            if( _parameters->fstandoff > 0 || _parameters->vintersectplane.lengthsqr4() > 0.5 ) {
+                // move the robot out of collision first
                 dReal fstandoff = _parameters->fstandoff;
                 if( ct & CT_EnvironmentCollision ) {
                     dReal oldX=0, oldY=0, oldZ=0;
@@ -317,36 +319,64 @@ public:
                         fstandoff = f;
                     }
                 }
-                Vector v = -vapproachdir*fstandoff;
-                if( pX != NULL ) {
-                    *pX += v.x;
-                }
-                if( pY != NULL ) {
-                    *pY += v.y;
-                }
-                if( pZ != NULL ) {
-                    *pZ += v.z;
-                }
-                _robot->SetActiveDOFValues(dofvals,KinBody::CLA_CheckLimitsSilent);
-                if( (!_parameters->targetbody && GetEnv()->CheckCollision(KinBodyConstPtr(_robot))) || (!!_parameters->targetbody && GetEnv()->CheckCollision(KinBodyConstPtr(_robot),KinBodyConstPtr(_parameters->targetbody))) ) {
-                    RAVELOG_DEBUG("grasp in collision from standoff, moving back\n");
+                if( _parameters->fstandoff > 0 ) {
+                    Vector v = -vapproachdir*fstandoff;
                     if( pX != NULL ) {
-                        *pX -= v.x;
+                        *pX += v.x;
                     }
                     if( pY != NULL ) {
-                        *pY -= v.y;
+                        *pY += v.y;
                     }
                     if( pZ != NULL ) {
-                        *pZ -= v.z;
+                        *pZ += v.z;
                     }
                     _robot->SetActiveDOFValues(dofvals,KinBody::CLA_CheckLimitsSilent);
+                    if( (!_parameters->targetbody && GetEnv()->CheckCollision(KinBodyConstPtr(_robot))) || (!!_parameters->targetbody && GetEnv()->CheckCollision(KinBodyConstPtr(_robot),KinBodyConstPtr(_parameters->targetbody))) ) {
+                        RAVELOG_DEBUG("grasp in collision from standoff, moving back\n");
+                        if( pX != NULL ) {
+                            *pX -= v.x;
+                        }
+                        if( pY != NULL ) {
+                            *pY -= v.y;
+                        }
+                        if( pZ != NULL ) {
+                            *pZ -= v.z;
+                        }
+                        _robot->SetActiveDOFValues(dofvals,KinBody::CLA_CheckLimitsSilent);
+                    }
+                    // check that anything that should be avoided is not hit
+                    ct = 0;
+                    for(int q = 0; q < (int)_vlinks.size(); q++) {
+                        ct = _CheckCollision(KinBody::LinkConstPtr(_vlinks[q]), KinBodyPtr());
+                        if( ct&CT_AvoidLinkHit ) {
+                            break;
+                        }
+                    }
                 }
-                // check that anything that should be avoided is not hit
-                ct = 0;
-                for(int q = 0; q < (int)_vlinks.size(); q++) {
-                    ct = _CheckCollision(KinBody::LinkConstPtr(_vlinks[q]), KinBodyPtr());
-                    if( ct&CT_AvoidLinkHit ) {
-                        break;
+                else if( _parameters->vintersectplane.lengthsqr4() > 0.5 ) {
+                    Vector vcurrenttrans = pmanip->GetTransform().trans;
+                    dReal fapproachnorm = vapproachdir.dot3(_parameters->vintersectplane);
+                    if( RaveFabs(fapproachnorm) > 0.0001 ) {
+                        dReal fapproach = (-_parameters->vintersectplane.w - vcurrenttrans.dot3(_parameters->vintersectplane))/fapproachnorm;
+                        Vector vdeltatrans = vapproachdir*fapproach;
+                        if( pX != NULL ) {
+                            *pX += vdeltatrans.x;
+                        }
+                        if( pY != NULL ) {
+                            *pY += vdeltatrans.y;
+                        }
+                        if( pZ != NULL ) {
+                            *pZ += vdeltatrans.z;
+                        }
+                        _robot->SetActiveDOFValues(dofvals,KinBody::CLA_CheckLimitsSilent);
+                        // check that anything that should be avoided is not hit
+                        ct = 0;
+                        for(int q = 0; q < (int)_vlinks.size(); q++) {
+                            ct = _CheckCollision(KinBody::LinkConstPtr(_vlinks[q]), KinBodyPtr());
+                            if( ct&CT_AvoidLinkHit ) {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -361,22 +391,22 @@ public:
 
         std::vector<dReal> vlowerlim, vupperlim;
         _robot->GetActiveDOFLimits(vlowerlim,vupperlim);
-        vector<dReal> vclosingdir(_robot->GetActiveDOF(),0);
+        vector<dReal> vchuckingdir(_robot->GetActiveDOF(),0);
         if( (int)_parameters->vgoalconfig.size() == _robot->GetActiveDOF() ) {
-            vclosingdir = _parameters->vgoalconfig;
+            vchuckingdir = _parameters->vgoalconfig;
         }
         else {
-            // get closing direction from manipulators
+            // get chucking direction from manipulators
             for(size_t i = 0; i < _robot->GetActiveDOFIndices().size(); ++i) {
                 FOREACHC(itmanip, _robot->GetManipulators()) {
-                    BOOST_ASSERT((*itmanip)->GetClosingDirection().size() == (*itmanip)->GetGripperIndices().size());
-                    vector<dReal>::const_iterator itclosing = (*itmanip)->GetClosingDirection().begin();
+                    BOOST_ASSERT((*itmanip)->GetChuckingDirection().size() == (*itmanip)->GetGripperIndices().size());
+                    vector<dReal>::const_iterator itchucking = (*itmanip)->GetChuckingDirection().begin();
                     FOREACHC(itgripper,(*itmanip)->GetGripperIndices()) {
-                        if(( *itclosing != 0) &&( *itgripper == _robot->GetActiveDOFIndices().at(i)) ) {
-                            vclosingdir.at(i) = *itclosing;
+                        if(( *itchucking != 0) &&( *itgripper == _robot->GetActiveDOFIndices().at(i)) ) {
+                            vchuckingdir.at(i) = *itchucking;
                             break;
                         }
-                        itclosing++;
+                        itchucking++;
                     }
                 }
             }
@@ -384,7 +414,7 @@ public:
 
         //close the fingers one by one
         for(size_t ifing = 0; ifing < _robot->GetActiveDOFIndices().size(); ifing++) {
-            if( vclosingdir.at(ifing) == 0 ) {
+            if( vchuckingdir.at(ifing) == 0 ) {
                 // not a real joint, so skip
                 continue;
             }
@@ -417,11 +447,11 @@ public:
 
             while(num_iters-- > 0) {
                 // set manip joints that haven't been covered so far
-                if( (vclosingdir[ifing] > 0 && dofvals[ifing] > vupperlim[ifing]+step_size ) || ( vclosingdir[ifing] < 0 && dofvals[ifing] < vlowerlim[ifing]-step_size ) ) {
+                if( (vchuckingdir[ifing] > 0 && dofvals[ifing] > vupperlim[ifing]+step_size ) || ( vchuckingdir[ifing] < 0 && dofvals[ifing] < vlowerlim[ifing]-step_size ) ) {
                     break;
                 }
 
-                dofvals[ifing] += vclosingdir[ifing] * step_size;
+                dofvals[ifing] += vchuckingdir[ifing] * step_size;
                 _robot->SetActiveDOFValues(dofvals,KinBody::CLA_CheckLimitsSilent);
                 _robot->GetActiveDOFValues(dofvals);
                 ct = _CheckCollision(KinBody::JointConstPtr(pjoint),KinBodyPtr());
@@ -430,7 +460,7 @@ public:
                         //coarse step collided, back up and shrink step
                         coarse_pass = false;
                         // move back one step before switching to smaller step size
-                        dofvals[ifing] -= vclosingdir[ifing] * step_size;
+                        dofvals[ifing] -= vchuckingdir[ifing] * step_size;
                         num_iters = (int)(step_size/(_parameters->ffinestep*fmult))+1;
                         step_size = _parameters->ffinestep*fmult;
                         continue;
@@ -454,7 +484,7 @@ public:
                         }
 
                         if( (ct & CT_SelfCollision) || _parameters->bavoidcontact ) {
-                            dofvals[ifing] -= vclosingdir[ifing] * step_size;
+                            dofvals[ifing] -= vchuckingdir[ifing] * step_size;
                             break;
                         }
                         nLinksCollideObstacle++;

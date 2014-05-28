@@ -67,10 +67,17 @@
 #include <boost/filesystem/operations.hpp>
 #endif
 
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/lu.hpp>
+
 #include "next_combination.h"
 
-#define LOAD_IKFUNCTION(fnname) { \
+#define LOAD_IKFUNCTION0(fnname) { \
         ikfunctions->_ ## fnname = (typename ikfast::IkFastFunctions<T>::fnname ## Fn)SysLoadSym(plib, # fnname); \
+}
+
+#define LOAD_IKFUNCTION(fnname) { \
+        LOAD_IKFUNCTION0(fnname); \
         if( !ikfunctions->_ ## fnname ) { \
             RAVELOG_WARN(str(boost::format("failed to find " # fnname " in %s. If the library is correct, have you compiled with IKFAST_CLIBRARY define that enables extern \"C\"?")%_libraryname)); \
             return false; \
@@ -175,7 +182,8 @@ public:
         template <typename T>
         bool _InitFunctions(boost::shared_ptr<MyFunctions<T> > ikfunctions)
         {
-            LOAD_IKFUNCTION(ComputeIk);
+            LOAD_IKFUNCTION0(ComputeIk);
+            LOAD_IKFUNCTION0(ComputeIk2);
             LOAD_IKFUNCTION(ComputeFk);
             LOAD_IKFUNCTION(GetNumFreeParameters);
             LOAD_IKFUNCTION(GetFreeParameters);
@@ -620,7 +628,7 @@ public:
     template<typename T> bool _PerfTiming(ostream& sout, boost::shared_ptr<ikfast::IkFastFunctions<T> > ikfunctions, int num, dReal maxtime)
     {
         OPENRAVE_ASSERT_OP(ikfunctions->_GetIkRealSize(),==,sizeof(T));
-        BOOST_ASSERT(!!ikfunctions->_ComputeIk && !!ikfunctions->_ComputeFk);
+        BOOST_ASSERT((!!ikfunctions->_ComputeIk || !!ikfunctions->_ComputeIk2) && !!ikfunctions->_ComputeFk);
 
         vector<uint64_t> vtimes(num);
         ikfast::IkSolutionList<T> solutions;
@@ -644,8 +652,15 @@ public:
             solutions.Clear();
             uint64_t numtoaverage=10;
             uint64_t starttime = utils::GetNanoPerformanceTime();
-            for(uint64_t j = 0; j < numtoaverage; ++j) {
-                ikfunctions->_ComputeIk(eetrans,eerot,vfree.size() > 0 ? &vfree[0] : NULL,solutions);
+            if( !!ikfunctions->_ComputeIk2 ) {
+                for(uint64_t j = 0; j < numtoaverage; ++j) {
+                    ikfunctions->_ComputeIk2(eetrans,eerot,vfree.size() > 0 ? &vfree[0] : NULL, solutions, NULL);
+                }
+            }
+            else if( !!ikfunctions->_ComputeIk ) {
+                for(uint64_t j = 0; j < numtoaverage; ++j) {
+                    ikfunctions->_ComputeIk(eetrans,eerot,vfree.size() > 0 ? &vfree[0] : NULL,solutions);
+                }
             }
             vtimes[i] = (utils::GetNanoPerformanceTime()-starttime)/numtoaverage;
         }
@@ -931,7 +946,7 @@ public:
                         }
                         else {
                             for(int j = 0; j < (int)vrealsolution.size(); j++) {
-                                if( RaveRandomFloat() > sampledegeneratecases ) {
+                                if( RaveRandomFloat() >= sampledegeneratecases ) {
                                     int dof = pmanip->GetArmIndices().at(j);
                                     if( robot->GetJointFromDOFIndex(dof)->IsCircular(dof-robot->GetJointFromDOFIndex(dof)->GetDOFIndex()) ) {
                                         vrealsolution[j] = -PI + 2*PI*RaveRandomFloat();
@@ -1109,7 +1124,7 @@ public:
                             vwrongsolutions.push_back(make_pair(twrist,vfreeparameters_out));
                             s.str("");
                             s << "FindIKSolutions: Incorrect IK, i = " << i << " error: " << RaveSqrt(twrist.ComputeDistanceSqr(twrist_out)) << endl
-                              << "Original Joint Val=[";
+                              << "originalJointValues=[";
                             FOREACH(it, vrealsolution) {
                                 s << *it << ", ";
                             }
@@ -1144,6 +1159,13 @@ public:
                         continue;
                     }
                     if( !bfoundinput ) {
+                        s.str("");
+                        s << "FindIKSolutions: expected ik solution not found." << std::endl << "originalJointValues=[";
+                        FOREACH(it, vrealsolution) {
+                            s << *it << ", ";
+                        }
+                        s << "]" << std::endl;
+                        RAVELOG_VERBOSE(s.str());
                         vnofullsolutions.push_back(make_pair(twrist,vfreeparameters_real));
                     }
                 }
@@ -1166,7 +1188,7 @@ public:
                             FOREACH(it, vfreeparameters) {
                                 s << *it << " ";
                             }
-                            s << endl << "Original Joint Val=[";
+                            s << endl << "originalJointValues=[";
                             FOREACH(it, vrealsolution) {
                                 s << *it << ", ";
                             }
@@ -1211,15 +1233,15 @@ public:
                             vwrongsolutions.push_back(make_pair(twrist,vfreeparameters_out));
                             s.str("");
                             s << "FindIKSolutions (freeparams): Incorrect IK, i = " << i <<" error: " << RaveSqrt(twrist.ComputeDistanceSqr(twrist_out)) << endl
-                              << "Original Joint Val: ";
+                              << "originalJointValues=[";
                             FOREACH(it, vrealsolution) {
-                                s << *it << " ";
+                                s << *it << ", ";
                             }
-                            s << endl << "Returned Joint Val: ";
+                            s << endl << "]" << endl << "; returnedJointValues=[";
                             FOREACH(it, *itsol) {
-                                s << *it << " ";
+                                s << *it << ", ";
                             }
-                            s << endl << "in: " << twrist << endl;
+                            s << endl << "]" << endl << "in: " << twrist << endl;
                             s << "out: " << twrist_out << endl;
                             s << "raw ik command: ";
                             GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);

@@ -35,7 +35,7 @@ public:
                 }
                 return PE_Ignore;
             }
-            static boost::array<string, 13> tags = { { "sensor", "kk", "width", "height", "framerate", "power", "color", "focal_length","image_dimensions","intrinsic","measurement_time", "format", "distortion_model"}};
+            static boost::array<string, 14> tags = { { "sensor", "kk", "width", "height", "framerate", "power", "color", "focal_length","image_dimensions","intrinsic","measurement_time", "format", "distortion_model", "distortion_coeffs"}};
             if( find(tags.begin(),tags.end(),name) == tags.end() ) {
                 return PE_Pass;
             }
@@ -69,6 +69,7 @@ public:
             }
             else if( name == "distortion_coeffs" ) {
                 _psensor->_pgeom->KK.distortion_coeffs = std::vector<dReal>((istream_iterator<dReal>(ss)), istream_iterator<dReal>());
+                ss.clear(); // should clear the error since distortion_coeffs read to the end
             }
             else if( name == "image_dimensions" ) {
                 ss >> _psensor->_pgeom->width >> _psensor->_pgeom->height >> _psensor->_numchannels;
@@ -214,6 +215,13 @@ public:
         _fTimeToImage = 0;
         _graphgeometry.reset();
         _dataviewer.reset();
+    }
+
+    virtual void SetSensorGeometry(SensorGeometryConstPtr pgeometry)
+    {
+        OPENRAVE_ASSERT_OP(pgeometry->GetType(), ==, ST_Camera );
+        *_pgeom = *boost::static_pointer_cast<CameraGeomData const>(pgeometry);
+        _Reset();
     }
 
     virtual bool SimulationStep(dReal fTimeElapsed)

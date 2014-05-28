@@ -1,5 +1,5 @@
 // -*- coding: utf-8 --*
-// Copyright (C) 2006-2012 Rosen Diankov <rosen.diankov@gmail.com>
+// Copyright (C) 2006-2014 Rosen Diankov <rosen.diankov@gmail.com>
 //
 // This file is part of OpenRAVE.
 // OpenRAVE is free software: you can redistribute it and/or modify
@@ -78,6 +78,13 @@ inline dReal ComputeStepSizeCeiling(dReal T,dReal step)
 inline bool IsMultipleOfStepSize(dReal T,dReal step)
 {
     return RaveFabs(T-ComputeStepSizeCeiling(T,step)) <= g_fEpsilonLinear;
+}
+
+inline dReal TransformDistance2(const Transform& t1, const Transform& t2, dReal frotweight=1, dReal ftransweight=1)
+{
+    //dReal facos = RaveAcos(min(dReal(1),RaveFabs(dot4(t1.rot,t2.rot))));
+    dReal facos = min((t1.rot-t2.rot).lengthsqr4(),(t1.rot+t2.rot).lengthsqr4());
+    return (t1.trans-t2.trans).lengthsqr3() + frotweight*facos; //*facos;
 }
 
 #endif

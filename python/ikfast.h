@@ -33,12 +33,19 @@
 #include <vector>
 #include <list>
 #include <stdexcept>
+#include <cmath>
 
 #ifndef IKFAST_HEADER_COMMON
 #define IKFAST_HEADER_COMMON
 
 /// should be the same as ikfast.__version__
-#define IKFAST_VERSION 68
+#define IKFAST_VERSION 71
+
+#ifdef _MSC_VER
+//#ifndef isfinite
+//#define isfinite _isfinite
+//#endif
+#endif // _MSC_VER
 
 namespace ikfast {
 
@@ -118,12 +125,14 @@ template <typename T>
 class IkFastFunctions
 {
 public:
-    IkFastFunctions() : _ComputeIk(NULL), _ComputeFk(NULL), _GetNumFreeParameters(NULL), _GetFreeParameters(NULL), _GetNumJoints(NULL), _GetIkRealSize(NULL), _GetIkFastVersion(NULL), _GetIkType(NULL), _GetKinematicsHash(NULL) {
+    IkFastFunctions() : _ComputeIk(NULL), _ComputeIk2(NULL), _ComputeFk(NULL), _GetNumFreeParameters(NULL), _GetFreeParameters(NULL), _GetNumJoints(NULL), _GetIkRealSize(NULL), _GetIkFastVersion(NULL), _GetIkType(NULL), _GetKinematicsHash(NULL) {
     }
     virtual ~IkFastFunctions() {
     }
     typedef bool (*ComputeIkFn)(const T*, const T*, const T*, IkSolutionListBase<T>&);
     ComputeIkFn _ComputeIk;
+    typedef bool (*ComputeIk2Fn)(const T*, const T*, const T*, IkSolutionListBase<T>&, void*);
+    ComputeIk2Fn _ComputeIk2;
     typedef void (*ComputeFkFn)(const T*, T*, T*);
     ComputeFkFn _ComputeFk;
     typedef int (*GetNumFreeParametersFn)();
@@ -194,6 +203,9 @@ public:
                 if( _vbasesol[i].indices[1] != (unsigned char)-1 && _vbasesol[i].indices[1] >= _vbasesol[i].maxsolutions ) {
                     throw std::runtime_error("2nd index >= max solutions for joint");
                 }
+            }
+            if( !std::isfinite(_vbasesol[i].foffset) ) {
+                throw std::runtime_error("foffset was not finite");
             }
         }
     }
@@ -297,6 +309,10 @@ typedef double IkReal;
    - For **TranslationLocalGlobal6D**, the diagonal elements ([0],[4],[8]) are the local translation inside the end effector coordinate system.
  */
 IKFAST_API bool ComputeIk(const IkReal* eetrans, const IkReal* eerot, const IkReal* pfree, ikfast::IkSolutionListBase<IkReal>& solutions);
+
+/** \brief Similar to ComputeIk except takes OpenRAVE boost::shared_ptr<RobotBase::Manipulator>*
+ */
+IKFAST_API bool ComputeIk2(const IkReal* eetrans, const IkReal* eerot, const IkReal* pfree, ikfast::IkSolutionListBase<IkReal>& solutions, void* pOpenRAVEManip);
 
 /// \brief Computes the end effector coordinates given the joint values. This function is used to double check ik.
 IKFAST_API void ComputeFk(const IkReal* joints, IkReal* eetrans, IkReal* eerot);

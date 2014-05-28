@@ -13,6 +13,8 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// shouldn't include openrave.h!
 #ifndef OPENRAVE_BOOST_PYTHON_BINDINGS
 #define OPENRAVE_BOOST_PYTHON_BINDINGS
 
@@ -50,8 +52,15 @@
 #include <string>
 #include <stdexcept>
 
+// apparently there's a problem with higher versions of C++
+#if __cplusplus > 199711L || defined(__GXX_EXPERIMENTAL_CXX0X__)
+#include <typeinfo>
+#define FOREACH(it, v) for(decltype((v).begin()) it = (v).begin(); it != (v).end(); (it)++)
+#define FOREACH_NOINC(it, v) for(decltype((v).begin()) it = (v).begin(); it != (v).end(); )
+#else
 #define FOREACH(it, v) for(typeof((v).begin())it = (v).begin(); it != (v).end(); (it)++)
 #define FOREACH_NOINC(it, v) for(typeof((v).begin())it = (v).begin(); it != (v).end(); )
+#endif
 
 #define FOREACHC FOREACH
 #define FOREACHC_NOINC FOREACH_NOINC
@@ -99,6 +108,9 @@ public:
 template <typename T>
 inline std::vector<T> ExtractArray(const object& o)
 {
+    if( o == object() ) {
+        return std::vector<T>();
+    }
     std::vector<T> v(len(o));
     for(size_t i = 0; i < v.size(); ++i) {
         v[i] = extract<T>(o[i]);
@@ -386,7 +398,7 @@ inline numeric::array toPyArrayN(const float* pvalues, size_t N)
     if( N == 0 ) {
         return static_cast<numeric::array>(numeric::array(boost::python::list()).astype("f4"));
     }
-    npy_intp dims[] = { N};
+    npy_intp dims[] = {npy_intp(N)};
     PyObject *pyvalues = PyArray_SimpleNew(1,dims, PyArray_FLOAT);
     if( pvalues != NULL ) {
         memcpy(PyArray_DATA(pyvalues),pvalues,N*sizeof(float));
@@ -418,7 +430,7 @@ inline numeric::array toPyArrayN(const double* pvalues, size_t N)
     if( N == 0 ) {
         return static_cast<numeric::array>(numeric::array(boost::python::list()).astype("f8"));
     }
-    npy_intp dims[] = { N};
+    npy_intp dims[] = {npy_intp(N)};
     PyObject *pyvalues = PyArray_SimpleNew(1,dims, PyArray_DOUBLE);
     if( pvalues != NULL ) {
         memcpy(PyArray_DATA(pyvalues),pvalues,N*sizeof(double));
@@ -469,7 +481,7 @@ inline numeric::array toPyArrayN(const uint8_t* pvalues, size_t N)
     if( N == 0 ) {
         return static_cast<numeric::array>(numeric::array(boost::python::list()).astype("u1"));
     }
-    npy_intp dims[] = { N};
+    npy_intp dims[] = {npy_intp(N)};
     PyObject *pyvalues = PyArray_SimpleNew(1,&dims[0], PyArray_UINT8);
     if( pvalues != NULL ) {
         memcpy(PyArray_DATA(pyvalues),pvalues,N*sizeof(uint8_t));
@@ -482,7 +494,7 @@ inline numeric::array toPyArrayN(const int* pvalues, size_t N)
     if( N == 0 ) {
         return static_cast<numeric::array>(numeric::array(boost::python::list()).astype("i4"));
     }
-    npy_intp dims[] = { N};
+    npy_intp dims[] = {npy_intp(N)};
     PyObject *pyvalues = PyArray_SimpleNew(1,&dims[0], PyArray_INT32);
     if( pvalues != NULL ) {
         memcpy(PyArray_DATA(pyvalues),pvalues,N*sizeof(int));
@@ -495,7 +507,7 @@ inline numeric::array toPyArrayN(const uint32_t* pvalues, size_t N)
     if( N == 0 ) {
         return static_cast<numeric::array>(numeric::array(boost::python::list()).astype("u4"));
     }
-    npy_intp dims[] = { N};
+    npy_intp dims[] = {npy_intp(N)};
     PyObject *pyvalues = PyArray_SimpleNew(1,&dims[0], PyArray_UINT32);
     if( pvalues != NULL ) {
         memcpy(PyArray_DATA(pyvalues),pvalues,N*sizeof(uint32_t));
@@ -507,8 +519,9 @@ template <typename T>
 inline object toPyList(const std::vector<T>& v)
 {
     boost::python::list lvalues;
-    FOREACHC(it,v)
-    lvalues.append(object(*it));
+    FOREACHC(it,v) {
+        lvalues.append(object(*it));
+    }
     return lvalues;
 }
 

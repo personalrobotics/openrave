@@ -1404,7 +1404,13 @@ public:
         case PE_Ignore: return PE_Ignore;
         }
 
-        static boost::array<string, 23> tags = { { "body", "offsetfrom", "weight", "lostop", "histop", "limits", "limitsrad", "limitsdeg", "maxvel", "maxveldeg", "hardmaxvel", "maxaccel", "maxacceldeg", "maxtorque", "maxforce", "resolution", "anchor", "axis", "axis1", "axis2", "axis3", "mode", "initial" }};
+        if( xmlname == "actuator" ) {
+            _processingtag = "";
+            _pcurreader.reset(new xmlreaders::ElectricMotorActuatorInfoReader(ElectricMotorActuatorInfoPtr(), atts));
+            return PE_Support;
+        }
+
+        static boost::array<string, 24> tags = { { "body", "offsetfrom", "weight", "lostop", "histop", "limits", "limitsrad", "limitsdeg", "maxvel", "maxveldeg", "hardmaxvel", "maxaccel", "maxacceldeg", "maxtorque", "maxinertia", "maxforce", "resolution", "anchor", "axis", "axis1", "axis2", "axis3", "mode", "initial" }};
         if( find(tags.begin(),tags.end(),xmlname) != tags.end() ) {
             _processingtag = xmlname;
             return PE_Support;
@@ -1419,6 +1425,10 @@ public:
 
         if( !!_pcurreader ) {
             if( _pcurreader->endElement(xmlname) ) {
+                xmlreaders::ElectricMotorActuatorInfoReaderPtr actuatorreader = boost::dynamic_pointer_cast<xmlreaders::ElectricMotorActuatorInfoReader>(_pcurreader);
+                if( !!actuatorreader ) {
+                    _pjoint->_info._infoElectricMotor = actuatorreader->GetActuatorInfo();
+                }
                 _pcurreader.reset();
             }
         }
@@ -1552,6 +1562,11 @@ public:
         else if( xmlname == "maxtorque" ) {
             for(int idof = 0; idof < _pjoint->GetDOF(); ++idof) {
                 _ss >> _pjoint->_info._vmaxtorque[idof];
+            }
+        }
+        else if( xmlname == "maxinertia" ) {
+            for(int idof = 0; idof < _pjoint->GetDOF(); ++idof) {
+                _ss >> _pjoint->_info._vmaxinertia[idof];
             }
         }
         else if( xmlname == "resolution" ) {
@@ -1969,8 +1984,8 @@ public:
             rootjpoffset = (int)_pchain->GetPassiveJoints().size();
             //RAVELOG_INFO(str(boost::format("links: %d, prefix: %s: %x\n")%_pchain->GetLinks().size()%_prefix%this));
             // reisze _vTransforms to be the same size as the initial number of links
-            std::vector<int> dofbranches;
-            _pchain->GetLinkTransformations(_vTransforms,dofbranches);
+            std::vector<dReal> doflastsetvalues;
+            _pchain->GetLinkTransformations(_vTransforms, doflastsetvalues);
         }
     }
 
@@ -2135,8 +2150,8 @@ public:
                 else if( xmlname == "kinbody" ) {
                     // most likely new transforms were added, so update
                     _CheckInterface();
-                    std::vector<int> dofbranches;
-                    _pchain->GetLinkTransformations(_vTransforms,dofbranches);
+                    std::vector<dReal> doflastsetvalues;
+                    _pchain->GetLinkTransformations(_vTransforms, doflastsetvalues);
                 }
                 else
                     RAVELOG_INFOA(str(boost::format("releasing unknown tag %s\n")%xmlname));
@@ -2431,7 +2446,7 @@ public:
         if( _processingtag.size() > 0 )
             return PE_Ignore;
 
-        if (( xmlname == "effector") ||( xmlname == "gripperjoints") ||( xmlname == "joints") ||( xmlname == "armjoints") ||( xmlname == "base") ||( xmlname == "iksolver") ||( xmlname == "closingdir") ||( xmlname == "palmdirection") ||( xmlname=="direction") ||( xmlname == "closingdirection") ||( xmlname == "translation") ||( xmlname == "quat") ||( xmlname == "rotationaxis") ||( xmlname == "rotationmat") ) {
+        if (( xmlname == "effector") ||( xmlname == "gripperjoints") ||( xmlname == "joints") ||( xmlname == "armjoints") ||( xmlname == "base") ||( xmlname == "iksolver") ||( xmlname == "closingdir") ||( xmlname == "palmdirection") ||( xmlname=="direction") ||( xmlname == "closingdirection") ||( xmlname == "translation") ||( xmlname == "quat") ||( xmlname == "rotationaxis") ||( xmlname == "rotationmat") || xmlname == "chuckingdirection") {
             _processingtag = xmlname;
             return PE_Support;
         }
@@ -2554,9 +2569,9 @@ public:
                 _manipinfo._sIkSolverXMLId = piksolver->GetXMLId();
             }
         }
-        else if( xmlname == "closingdirection" || xmlname == "closingdir" ) {
-            _manipinfo._vClosingDirection = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
-            FOREACH(it, _manipinfo._vClosingDirection) {
+        else if( xmlname == "closingdirection" || xmlname == "closingdir" || xmlname == "chuckingdirection" ) {
+            _manipinfo._vChuckingDirection = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
+            FOREACH(it, _manipinfo._vChuckingDirection) {
                 if( *it > 0 ) {
                     *it = 1;
                 }

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2011 Rosen Diankov <rosen.diankov@gmail.com>
+# Copyright (C) 2011-2014 Rosen Diankov <rosen.diankov@gmail.com>
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,14 +32,52 @@ class TestTrajectory(EnvironmentSetup):
         Tgoal2[2,3] += 0.2
         traj2=basemanip.MoveToHandPosition(matrices=[Tgoal2],execute=False,outputtrajobj=True)
         traj3=planningutils.MergeTrajectories([traj1,traj2])
-
+        samplepoints = [traj3.Sample(t) for t in arange(0,mergedtraj.GetDuration(),0.001)]
+        
         with robot:
             dofvalues=traj3.GetConfigurationSpecification().ExtractJointValues(traj3.GetWaypoint(-1),robot,range(robot.GetDOF()),0)
             robot.SetDOFValues(dofvalues)
             assert( transdist(manip1.GetTransform(),Tgoal1) <= g_epsilon)
             assert( transdist(manip2.GetTransform(),Tgoal2) <= g_epsilon)
             assert( abs(traj3.GetDuration() - max(traj1.GetDuration(),traj2.GetDuration())) <= g_epsilon )
-
+            
+    def test_merging2(self):
+        env=self.env
+        trajdata0 = '''<trajectory>
+<configuration>
+<group name="deltatime" offset="12" dof="1" interpolation=""/>
+<group name="joint_velocities VP-5243I 0 1 2 3 4 5" offset="6" dof="6" interpolation="linear"/>
+<group name="joint_values VP-5243I 0 1 2 3 4 5" offset="0" dof="6" interpolation="quadratic"/>
+<group name="iswaypoint" offset="13" dof="1" interpolation="next"/>
+</configuration>
+<data count="2">
+-0.8737497362585444 -1.833063636502771 -0.04904471515159316 1.386355549904503 0.4791846030244422 1.809378346685542 0 0 0 0 0 0 0 1 -0.8765424108195985 -1.836139674945802 -0.03143274177414394 1.366201809860468 0.4965835325767093 1.800686720206982 -0.1114030778269826 -0.1227067968630246 0.7025623637700553 -0.803956430133756 0.6940637946319578 -0.3467192183927885 0.05013639866200836 1</data>
+</trajectory>
+'''
+        traj0 = RaveCreateTrajectory(env, '')
+        traj0.deserialize(trajdata0)
+        
+        trajdata1 = '''<trajectory>
+<configuration>
+<group name="deltatime" offset="2" dof="1" interpolation=""/>
+<group name="joint_velocities VP-5243I 6" offset="1" dof="1" interpolation="linear"/>
+<group name="joint_values VP-5243I 6" offset="0" dof="1" interpolation="quadratic"/>
+</configuration>
+<data count="2">
+0.009999999999999789 0 0 0.01 0 1.097258033075657e-08 </data>
+</trajectory>
+'''
+        traj1 = RaveCreateTrajectory(env, '')
+        traj1.deserialize(trajdata1)
+        
+        mergedtraj = planningutils.MergeTrajectories([traj0, traj1])
+        spec = mergedtraj.GetConfigurationSpecification()
+        iswaypointindex = spec.FindCompatibleGroup('iswaypoint',True).offset
+        for i in range(mergedtraj.GetNumWaypoints()):
+            assert( abs(mergedtraj.GetWaypoint(i)[iswaypointindex]-1) < 1e-7 )
+        
+        samplepoints = [mergedtraj.Sample(t) for t in arange(0,mergedtraj.GetDuration(),0.001)]
+    
     def test_grabbing(self):
         env = self.env
         with env:
@@ -332,16 +370,30 @@ class TestTrajectory(EnvironmentSetup):
         robot.SetDOFAccelerationLimits([ 26.1799999999999997,  19.6350000000000016,  14.9600000000000009, 47.1240000000000023,  36.2490000000000023,  41.8879999999999981])
         robot.SetDOFLimits(array([-4.1887902047863905, -2.0943951023931953,  0.                , -3.4906585039886591, -2.0943951023931953, -6.2831853071795862]),
                            array([ 4.1887902047863905,  2.0943951023931953,  2.8099800957108707, 3.4906585039886591,  2.0943951023931953,  6.2831853071795862]))
+        controller_timestep = 0.00711111111111
+        from IPython.terminal import embed; ipshell=embed.InteractiveShellEmbed(config=embed.load_default_config())(local_ns=locals())
+        
         traj = RaveCreateTrajectory(robot.GetEnv(),'')
         traj.Init(robot.GetActiveConfigurationSpecification())
         traj.Insert(0,[-1.5707962927971486, -0.5115644004003523,  2.7255228159183407, 3.1415927831636017,  0.6431620887230958,  6.2831852909169683])
         traj.Insert(1, [1.5707962849435657e+00,   2.9701411104634212e-01, 2.3875409344616441e+00,  -3.1415927489387800e+00, 1.1137587187130915e+00,   1.2949949709057725e-07])
-        controller_timestep = 0.00711111111111
         activeretimer = planningutils.ActiveDOFTrajectoryRetimer(robot, plannername='ParabolicTrajectoryRetimer',plannerparameters='<multidofinterp>2</multidofinterp><outputaccelchanges>1</outputaccelchanges><_fsteplength>%.15e</_fsteplength>'%controller_timestep)
         RaveSetDebugLevel(DebugLevel.Verbose)
         ret=activeretimer.PlanPath(traj,False)
         assert(ret == PlannerStatus.HasSolution)
         assert( abs(traj.GetDuration()-0.910222222222) < g_epsilon)
+        self.RunTrajectory(robot, traj)
+        
+        traj = RaveCreateTrajectory(robot.GetEnv(),'')
+        traj.Init(robot.GetActiveConfigurationSpecification())
+        traj.Insert(0,[-1.5707962927971486, -0.5115644004003523,  2.7255228159183407, 3.1415927831636017,  0.6431620887230958,  6.2831852909169683])
+        traj.Insert(1, [1.5707962849435657e+00,   2.9701411104634212e-01, 2.3875409344616441e+00,  -3.1415927489387800e+00, 1.1137587187130915e+00,   1.2949949709057725e-07])
+        activeretimer = planningutils.ActiveDOFTrajectoryRetimer(robot, plannername='CubicTrajectoryRetimer',plannerparameters='<_fsteplength>%.15e</_fsteplength>'%controller_timestep)
+        RaveSetDebugLevel(DebugLevel.Verbose)
+        ret=activeretimer.PlanPath(traj,False)
+        assert(ret == PlannerStatus.HasSolution)
+        self.RunTrajectory(robot, traj)
+        assert( abs(traj.GetDuration()-1.01688888888873) < g_epsilon)
         
     def test_ikparamretiming(self):
         self.log.info('retime workspace ikparam')
@@ -759,7 +811,9 @@ class TestTrajectory(EnvironmentSetup):
             jitteredinit = 0.1*ones(len(goal))
 
 
-            
+            parameters=Planner.PlannerParameters()
+            parameters.SetRobotActiveJoints(robot)
+
             origtraj=manipprob.MoveManipulator(goal=goal,outputtrajobj=True,execute=False)
 
             traj = RaveClone(origtraj, 0)
@@ -771,12 +825,13 @@ class TestTrajectory(EnvironmentSetup):
             
             planningutils.ExtendActiveDOFWaypoint(0,jitteredinit,zeros(len(jitteredinit)), traj, robot, 1, 1, 'ParabolicTrajectoryRetimer')
             assert( sum(abs(traj.GetWaypoint(0, robot.GetActiveConfigurationSpecification())-jitteredinit)) <= g_epsilon)
-            parameters=Planner.PlannerParameters()
-            parameters.SetRobotActiveJoints(robot)
             planningutils.VerifyTrajectory(parameters, traj,0.01)
             
-            traj = RaveClone(origtraj)
-            planningutils.ExtendWaypoint(traj.GetNumWaypoints(),jitteredgoal,zeros(len(jitteredgoal)), traj, robot)
+            traj = RaveClone(origtraj, 0)
+            planner = RaveCreatePlanner(env, 'parabolictrajectoryretimer')
+            parameters.SetExtraParameters("<hasvelocities>1</hasvelocities>") # need this to preserve the velocities at the end points
+            planner.InitPlan(robot, parameters)
+            planningutils.ExtendWaypoint(traj.GetNumWaypoints(),jitteredgoal,zeros(len(jitteredgoal)), traj, planner)
             assert( sum(abs(traj.GetWaypoint(-1, robot.GetActiveConfigurationSpecification())-jitteredgoal)) <= g_epsilon)
             planningutils.VerifyTrajectory(parameters, traj,0.01)
             

@@ -58,16 +58,17 @@ public:
             daeDocument* doc = dae->getDatabase()->getDocument(docuri.c_str(), true);
             if( !doc ) {
                 if( uri.scheme() == _scheme ) {
-                    if( uri.path().size() == 0 ) {
+                    std::string uriNativePath = cdom::uriToFilePath(uri.path());
+                    if( uriNativePath.size() == 0 ) {
                         return NULL;
                     }
                     // remove first slash because we need relative file
                     std::string docurifull="file:";
-                    if( uri.path().at(0) == '/' ) {
-                        docurifull += RaveFindLocalFile(uri.path().substr(1), "/");
+                    if( uriNativePath.at(0) == '/' ) {
+                        docurifull += cdom::nativePathToUri(RaveFindLocalFile(uriNativePath.substr(1), "/"));
                     }
                     else {
-                        docurifull += RaveFindLocalFile(uri.path(), "/");
+                        docurifull += cdom::nativePathToUri(RaveFindLocalFile(uriNativePath, "/"));
                     }
                     if( docurifull.size() == 5 ) {
                         RAVELOG_WARN(str(boost::format("daeOpenRAVEURIResolver::resolveElement() - Failed to resolve %s ")%uri.str()));
@@ -76,6 +77,7 @@ public:
                     domCOLLADA* proxy = (domCOLLADA*)dae->open(docurifull);
                     if( !!proxy ) {
                         if( !!_preader ) {
+                            // have to convert the first element back to URI with %20 since that's what other functions input
                             _preader->_mapInverseResolvedURIList.insert(make_pair(docurifull,daeURI(*uri.getDAE(),docuri)));
                         }
                         doc = uri.getDAE()->getDatabase()->getDocument(docurifull.c_str(),true);
@@ -174,7 +176,7 @@ public:
 
         daeElementRef pvisualtrans;
         domAxis_constraintRef pkinematicaxis;
-        dReal jointvalue;
+        dReal jointvalue; ///< this value is in degrees/meters
         domNodeRef visualnode;
         domKinematics_axis_infoRef kinematics_axis_info;
         domMotion_axis_infoRef motion_axis_info;
@@ -245,6 +247,7 @@ public:
         _bOpeningZAE = false;
         _bSkipGeometry = false;
         _fGlobalScale = 1;
+        _bBackCompatValuesInRadians = false;
         if( sizeof(daeFloat) == 4 ) {
             RAVELOG_WARN("collada-dom compiled with 32-bit floating-point, so there might be precision errors\n");
         }
@@ -257,6 +260,7 @@ public:
         _InitPreOpen(atts);
         _bOpeningZAE = uristr.find(".zae") == uristr.size()-4;
         daeURI urioriginal(*_dae, uristr);
+        urioriginal.fragment(std::string()); // have to set the fragment to empty!
         std::string uriresolved;
 
         if( find(_vOpenRAVESchemeAliases.begin(),_vOpenRAVESchemeAliases.end(),urioriginal.scheme()) != _vOpenRAVESchemeAliases.end() ) {
@@ -275,7 +279,7 @@ public:
                 return false;
             }
         }
-        _dom = daeSafeCast<domCOLLADA>(_dae->open(uriresolved.size() > 0 ? uriresolved : uristr));
+        _dom = daeSafeCast<domCOLLADA>(_dae->open(uriresolved.size() > 0 ? uriresolved : urioriginal.str()));
         if( !_dom ) {
             return false;
         }
@@ -361,9 +365,24 @@ public:
     bool _InitPostOpen(const AttributesList& atts)
     {
         _fGlobalScale = 1;
+        _bBackCompatValuesInRadians = false;
         if( !!_dom->getAsset() ) {
             if( !!_dom->getAsset()->getUnit() ) {
                 _fGlobalScale = _dom->getAsset()->getUnit()->getMeter();
+            }
+
+            // check the authoring tool
+            for(size_t icontrib = 0; icontrib < _dom->getAsset()->getContributor_array().getCount(); ++icontrib) {
+                domAsset::domContributorRef pcontrib = _dom->getAsset()->getContributor_array()[icontrib];
+                if( !!pcontrib->getAuthoring_tool() ) {
+                    std::string authoring_tool = pcontrib->getAuthoring_tool()->getValue();
+                    // possible there's other old writers that save in radians...
+                    // newest openrave writers should have vX.Y.Z appended
+                    if( authoring_tool == "OpenRAVE Collada Writer" || authoring_tool == "URDF Collada Writer" ) {
+                        _bBackCompatValuesInRadians = true;
+                        RAVELOG_INFO("collada reader backcompat parsing for joint values\n");
+                    }
+                }
             }
         }
         FOREACHC(itatt,atts) {
@@ -614,22 +633,28 @@ public:
         FOREACH(itaxisbinding,bindings.listAxisBindings) {
             if( !!itaxisbinding->_pjoint && itaxisbinding->_pjoint->GetParent() == pbody ) {
                 if( itaxisbinding->_pjoint->GetDOFIndex() >= 0 ) {
-                    values.at(itaxisbinding->_pjoint->GetDOFIndex()+itaxisbinding->_iaxis) = itaxisbinding->jointvalue;
+                    int idof = itaxisbinding->_pjoint->GetDOFIndex()+itaxisbinding->_iaxis;
+                    dReal value = itaxisbinding->jointvalue;
+                    if( !_bBackCompatValuesInRadians && pbody->IsDOFRevolute(idof) ) {
+                        value *= M_PI/180.0;
+                    }
+                    values.at(itaxisbinding->_pjoint->GetDOFIndex()+itaxisbinding->_iaxis) = value;
                 }
             }
         }
         pbody->SetDOFValues(values);
     }
 
-    /// \extract the first possible robot in the scene
-    bool Extract(RobotBasePtr& probot)
+    /// \extract robot from the scene
+    ///
+    /// \param instanceArticulatdSystemId If not empty, will extract the first articulated_system whose id matches instanceArticulatdSystemId. If empty, will extract the first articulated system found.
+    bool Extract(RobotBasePtr& probot, const std::string& instanceArticulatdSystemId=std::string())
     {
         std::list< pair<domInstance_kinematics_modelRef, boost::shared_ptr<KinematicsSceneBindings> > > listPossibleBodies;
         domCOLLADA::domSceneRef allscene = _dom->getScene();
         if( !allscene ) {
             return false;
         }
-
         _setInitialLinks.clear();
         _setInitialJoints.clear();
         _setInitialManipulators.clear();
@@ -664,6 +689,12 @@ public:
             _ExtractKinematicsVisualBindings(allscene->getInstance_visual_scene(),kiscene,*bindings);
             _ExtractPhysicsBindings(allscene,*bindings);
             for(size_t ias = 0; ias < kscene->getInstance_articulated_system_array().getCount(); ++ias) {
+                if( instanceArticulatdSystemId.size() > 0 ) {
+                    xsAnyURI articulatedSystemURI = kscene->getInstance_articulated_system_array()[ias]->getUrl();
+                    if( articulatedSystemURI.getReferencedDocument() != _dom->getDocument() || articulatedSystemURI.fragment() != instanceArticulatdSystemId ) {
+                        continue;
+                    }
+                }
                 KinBodyPtr pbody=probot;
                 std::list<daeElementRef> listInstanceScope;
                 if( ExtractArticulatedSystem(pbody, kscene->getInstance_articulated_system_array()[ias], *bindings, listInstanceScope) && !!pbody ) {
@@ -680,12 +711,20 @@ public:
             }
         }
 
-        KinBodyPtr pbody = probot;
-        FOREACH(it, listPossibleBodies) {
-            std::list<daeElementRef> listInstanceScope;
-            if( ExtractKinematicsModel(pbody, it->first, *it->second, listInstanceScope) && !!pbody ) {
-                bSuccess = true;
-                break;
+        if( !bSuccess ) {
+            KinBodyPtr pbody = probot;
+            FOREACH(it, listPossibleBodies) {
+                if( instanceArticulatdSystemId.size() > 0 ) {
+                    xsAnyURI articulatedSystemURI = it->first->getUrl();
+                    if( articulatedSystemURI.getReferencedDocument() != _dom->getDocument() || articulatedSystemURI.fragment() != instanceArticulatdSystemId ) {
+                        continue;
+                    }
+                }
+                std::list<daeElementRef> listInstanceScope;
+                if( ExtractKinematicsModel(pbody, it->first, *it->second, listInstanceScope) && !!pbody ) {
+                    bSuccess = true;
+                    break;
+                }
             }
         }
 
@@ -713,7 +752,10 @@ public:
         return bSuccess;
     }
 
-    bool Extract(KinBodyPtr& pbody)
+    /// \extract a kinbody from the scene
+    ///
+    /// \param instanceArticulatdSystemId If not empty, will extract the first articulated_system whose id matches instanceArticulatdSystemId. If empty, will extract the first articulated system found.
+    bool Extract(KinBodyPtr& pbody, const std::string& instanceArticulatdSystemId=std::string())
     {
         domCOLLADA::domSceneRef allscene = _dom->getScene();
         if( !allscene ) {
@@ -744,6 +786,12 @@ public:
             _ExtractKinematicsVisualBindings(allscene->getInstance_visual_scene(),kiscene,*bindings);
             _ExtractPhysicsBindings(allscene,*bindings);
             for(size_t ias = 0; ias < kscene->getInstance_articulated_system_array().getCount(); ++ias) {
+                if( instanceArticulatdSystemId.size() > 0 ) {
+                    xsAnyURI articulatedSystemURI = kscene->getInstance_articulated_system_array()[ias]->getUrl();
+                    if( articulatedSystemURI.getReferencedDocument() != _dom->getDocument() || articulatedSystemURI.fragment() != instanceArticulatdSystemId ) {
+                        continue;
+                    }
+                }
                 std::list<daeElementRef> listInstanceScope;
                 if( ExtractArticulatedSystem(pbody, kscene->getInstance_articulated_system_array()[ias], *bindings, listInstanceScope) && !!pbody ) {
                     bSuccess = true;
@@ -758,6 +806,12 @@ public:
             }
         }
         FOREACH(it, listPossibleBodies) {
+            if( instanceArticulatdSystemId.size() > 0 ) {
+                xsAnyURI articulatedSystemURI = it->first->getUrl();
+                if( articulatedSystemURI.getReferencedDocument() != _dom->getDocument() || articulatedSystemURI.fragment() != instanceArticulatdSystemId ) {
+                    continue;
+                }
+            }
             std::list<daeElementRef> listInstanceScope;
             if( ExtractKinematicsModel(pbody, it->first, *it->second, listInstanceScope) && !!pbody ) {
                 bSuccess = true;
@@ -827,7 +881,7 @@ public:
 
     /// \brief extracts an articulated system. Note that an articulated system can include other articulated systems
     /// \param probot the robot to be created from the system
-    bool ExtractArticulatedSystem(KinBodyPtr& pbody, domInstance_articulated_systemRef ias, KinematicsSceneBindings& bindings, std::list<daeElementRef>& listInstanceScope)
+    bool ExtractArticulatedSystem(KinBodyPtr& pbody, domInstance_articulated_systemRef ias, KinematicsSceneBindings& bindings, std::list<daeElementRef>& listInstanceScope, const std::string& strParentURI=std::string(), const std::string& strParentName=std::string())
     {
         if( !ias ) {
             return false;
@@ -852,32 +906,42 @@ public:
                     return false;
                 }
             }
-            if( !pbody ) {
-                pbody = RaveCreateRobot(_penv,"genericrobot");
-                if( !pbody ) {
-                    pbody = RaveCreateRobot(_penv,"");
-                    RAVELOG_WARN("creating default robot with no controller support\n");
-                }
-            }
+
             _mapJointUnits.clear();
             _mapJointSids.clear();
         }
-        if( pbody->__struri.size() == 0 ) {
-            pbody->__struri = ias->getUrl().str();
+
+        std::string struri = strParentURI;
+        if( struri.size() == 0 ) {
+            struri = _ResolveInverse(ias->getUrl()).str();
+        }
+        else {
+            // actually ias_new might be pointing to a different document than ias, so check and prioritize ias_new
+            if( _ResolveInverse(*ias->getDocumentURI()).str() != _ResolveInverse(*articulated_system->getDocumentURI()).str() ) {
+                // documents are different, so store the URI
+                struri = _ResolveInverse(ias->getUrl()).str();
+            }
+        }
+        if( !!pbody ) {
+            pbody->__struri = struri;
         }
 
+        std::string strname = strParentName;
         // set the name
-        if(( pbody->GetName().size() == 0) && !!ias->getName() ) {
-            pbody->SetName(ias->getName());
+        if(( strname.size() == 0) && !!ias->getName() ) {
+            strname = ias->getName();
         }
-        if(( pbody->GetName().size() == 0) && !!ias->getSid()) {
-            pbody->SetName(ias->getSid());
+        if(( strname.size() == 0) && !!ias->getSid()) {
+            strname = ias->getSid();
         }
-        if(( pbody->GetName().size() == 0) && !!articulated_system->getName() ) {
-            pbody->SetName(articulated_system->getName());
+        if(( strname.size() == 0) && !!articulated_system->getName() ) {
+            strname = articulated_system->getName();
         }
-        if(( pbody->GetName().size() == 0) && !!articulated_system->getId()) {
-            pbody->SetName(articulated_system->getId());
+        if(( strname.size() == 0) && !!articulated_system->getId()) {
+            strname = articulated_system->getId();
+        }
+        if( !!pbody ) {
+            pbody->SetName(strname);
         }
 
         if( !!articulated_system->getMotion() ) {
@@ -902,7 +966,7 @@ public:
                 }
             }
             listInstanceScope.push_back(ias);
-            bool bsuccess = ExtractArticulatedSystem(pbody,ias_new,bindings, listInstanceScope);
+            bool bsuccess = ExtractArticulatedSystem(pbody, ias_new, bindings, listInstanceScope, struri, strname);
             listInstanceScope.pop_back();
             if( !bsuccess ) {
                 return false;
@@ -983,6 +1047,7 @@ public:
                 if( !pbody ) {
                     pbody = RaveCreateRobot(_penv, "");
                 }
+                pbody->__struri = struri;
                 _mapJointUnits.clear();
                 _mapJointSids.clear();
             }
@@ -1041,6 +1106,8 @@ public:
         }
         _ExtractCollisionData(pbody,articulated_system,articulated_system->getExtra_array(),bindings.listLinkBindings);
         _ExtractExtraData(pbody,articulated_system->getExtra_array());
+        // also collision data state can be dynamic, so process instance_articulated_system too
+        _ExtractCollisionData(pbody,ias,ias->getExtra_array(),bindings.listLinkBindings);
         return true;
     }
 
@@ -1507,7 +1574,11 @@ public:
             }
         }
         else {
-            RAVELOG_WARN(str(boost::format("failed to find rigid_body info for link %s")%plink->_info._name));
+            std::string nodeid;
+            if( !!pdomnode && !!pdomnode->getId() ) {
+                nodeid = pdomnode->getId();
+            }
+            RAVELOG_WARN(str(boost::format("failed to find rigid_body info for link %s:%s, nodeid=%s")%plink->GetParent()->GetName()%plink->GetName()%nodeid));
         }
 
         if (!pdomlink) {
@@ -1708,6 +1779,14 @@ public:
                         vAxes[ic] = Vector(0,0,1);
                     }
 
+                    dReal fjointmult = 1.0;
+                    if( pjoint->IsRevolute(ic) ) {
+                        fjointmult = PI/180.0f;
+                    }
+                    else if( pjoint->IsPrismatic(ic) && !!kinematics_axis_info ) {
+                        fjointmult = _GetUnitScale(kinematics_axis_info,_fGlobalScale);
+                    }
+
                     pjoint->_info._voffsets[ic] = 0;     // to overcome -pi to pi boundary
                     if (pkinbody->IsRobot() && !motion_axis_info) {
                         RAVELOG_WARN(str(boost::format("No motion axis info for joint %s\n")%pjoint->GetName()));
@@ -1717,10 +1796,16 @@ public:
                     if (!!motion_axis_info) {
                         if (!!motion_axis_info->getSpeed()) {
                             pjoint->_info._vmaxvel[ic] = resolveFloat(motion_axis_info->getSpeed(),motion_axis_info);
+                            if( !_bBackCompatValuesInRadians ) {
+                                pjoint->_info._vmaxvel[ic] *= fjointmult;
+                            }
                             RAVELOG_VERBOSE("... Joint Speed: %f...\n",pjoint->GetMaxVel());
                         }
                         if (!!motion_axis_info->getAcceleration()) {
                             pjoint->_info._vmaxaccel[ic] = resolveFloat(motion_axis_info->getAcceleration(),motion_axis_info);
+                            if( !_bBackCompatValuesInRadians ) {
+                                pjoint->_info._vmaxaccel[ic] *= fjointmult;
+                            }
                             RAVELOG_VERBOSE("... Joint Acceleration: %f...\n",pjoint->GetMaxAccel());
                         }
                     }
@@ -1742,9 +1827,8 @@ public:
                         }
                         else if (!!kinematics_axis_info->getLimits()) {     // If there are articulated system kinematics limits
                             has_soft_limits = true;
-                            dReal fscale = pjoint->IsRevolute(ic) ? (PI/180.0f) : _GetUnitScale(kinematics_axis_info,_fGlobalScale);
-                            pjoint->_info._vlowerlimit.at(ic) = fscale*(dReal)(resolveFloat(kinematics_axis_info->getLimits()->getMin(),kinematics_axis_info));
-                            pjoint->_info._vupperlimit.at(ic) = fscale*(dReal)(resolveFloat(kinematics_axis_info->getLimits()->getMax(),kinematics_axis_info));
+                            pjoint->_info._vlowerlimit.at(ic) = fjointmult*(dReal)(resolveFloat(kinematics_axis_info->getLimits()->getMin(),kinematics_axis_info));
+                            pjoint->_info._vupperlimit.at(ic) = fjointmult*(dReal)(resolveFloat(kinematics_axis_info->getLimits()->getMax(),kinematics_axis_info));
                             if( pjoint->IsRevolute(ic) ) {
                                 if(( pjoint->_info._vlowerlimit.at(ic) < -PI) ||( pjoint->_info._vupperlimit[ic] > PI) ) {
                                     // TODO, necessary?
@@ -1800,15 +1884,17 @@ public:
 
                     if (!joint_locked && !!pdomaxis->getLimits() ) {
                         has_hard_limits = true;
-                        // contains the hard limits (prioritize over soft limits)
-                        RAVELOG_VERBOSE(str(boost::format("There are LIMITS in joint %s ...\n")%pjoint->GetName()));
-                        dReal fscale = pjoint->IsRevolute(ic) ? (PI/180.0f) : _GetUnitScale(pdomaxis,_fGlobalScale);
-                        pjoint->_info._vlowerlimit.at(ic) = (dReal)pdomaxis->getLimits()->getMin()->getValue()*fscale;
-                        pjoint->_info._vupperlimit.at(ic) = (dReal)pdomaxis->getLimits()->getMax()->getValue()*fscale;
-                        if( pjoint->IsRevolute(ic) ) {
-                            if(( pjoint->_info._vlowerlimit[ic] < -PI) ||( pjoint->_info._vupperlimit[ic] > PI) ) {
-                                // TODO, necessary?
-                                pjoint->_info._voffsets[ic] = 0.5f * (pjoint->_info._vlowerlimit[ic] + pjoint->_info._vupperlimit[ic]);
+                        if( !has_soft_limits ) { // prioritize soft-limits
+                            // contains the hard limits (prioritize over soft limits)
+                            RAVELOG_VERBOSE_FORMAT("There are LIMITS in joint %s", pjoint->GetName());
+                            dReal fscale = pjoint->IsRevolute(ic) ? (PI/180.0f) : _GetUnitScale(pdomaxis,_fGlobalScale);
+                            pjoint->_info._vlowerlimit.at(ic) = (dReal)pdomaxis->getLimits()->getMin()->getValue()*fscale;
+                            pjoint->_info._vupperlimit.at(ic) = (dReal)pdomaxis->getLimits()->getMax()->getValue()*fscale;
+                            if( pjoint->IsRevolute(ic) ) {
+                                if(( pjoint->_info._vlowerlimit[ic] < -PI) ||( pjoint->_info._vupperlimit[ic] > PI) ) {
+                                    // TODO, necessary?
+                                    pjoint->_info._voffsets[ic] = 0.5f * (pjoint->_info._vlowerlimit[ic] + pjoint->_info._vupperlimit[ic]);
+                                }
                             }
                         }
                     }
@@ -2112,7 +2198,7 @@ public:
             primitivecount = triRef->getP_array().getCount();
         }
         for(size_t ip = 0; ip < primitivecount; ++ip) {
-            domList_of_uints indexArray =triRef->getP_array()[ip]->getValue();
+            domList_of_uints indexArray = triRef->getP_array()[ip]->getValue();
             for (size_t i=0; i<vertsRef->getInput_array().getCount(); ++i) {
                 domInput_localRef localRef = vertsRef->getInput_array()[i];
                 daeString str = localRef->getSemantic();
@@ -2288,7 +2374,7 @@ public:
             }
         }
         triangleIndexStride++;
-        const domList_of_uints& indexArray =triRef->getP()->getValue();
+        const domList_of_uints& indexArray = triRef->getP()->getValue();
         for (size_t i=0; i<vertsRef->getInput_array().getCount(); ++i) {
             domInput_localRef localRef = vertsRef->getInput_array()[i];
             daeString str = localRef->getSemantic();
@@ -2637,18 +2723,18 @@ public:
                                 daeTArray<daeElementRef> children;
                                 pmanipchild->getChildren(children);
                                 for (size_t i = 0; i < children.getCount(); i++) {
-                                    if( children[i]->getElementName() == string("closing_direction") ) {
+                                    if( children[i]->getElementName() == string("closing_direction") || children[i]->getElementName() == string("chucking_direction")) {
                                         domAxis_constraintRef paxis = daeSafeCast<domAxis_constraint>(daeSidRef(children[i]->getAttribute("axis"), pdomjoint).resolve().elt);
-                                        domFloat closing_direction = 0;
+                                        domFloat chucking_direction = 0;
                                         if( !paxis ) {
                                             RAVELOG_WARN(str(boost::format("cannot resolve joint %s axis %s")%pmanipchild->getAttribute("joint")%children[i]->getAttribute("axis")));
                                         }
                                         else {
-                                            if( !resolveCommon_float_or_param(children[i],as,closing_direction) ) {
-                                                RAVELOG_WARN(str(boost::format("gripper joint %s axis %s cannot extract closing_direction\n")%children[i]->getAttribute("axis")%pmanipchild->getAttribute("joint")));
+                                            if( !resolveCommon_float_or_param(children[i],as,chucking_direction) ) {
+                                                RAVELOG_WARN(str(boost::format("gripper joint %s axis %s cannot extract chucking_direction\n")%children[i]->getAttribute("axis")%pmanipchild->getAttribute("joint")));
                                             }
                                         }
-                                        manipinfo._vClosingDirection.push_back((dReal)closing_direction);
+                                        manipinfo._vChuckingDirection.push_back((dReal)chucking_direction);
                                     }
                                 }
                                 continue;
@@ -3421,7 +3507,7 @@ private:
                 }
             }
 
-            resolveCommon_float_or_param(pelt,kscene,jointvalue);
+            resolveCommon_float_or_param(pelt,kscene, jointvalue);
             bindings.listAxisBindings.push_back(JointAxisBinding(pjtarget, pjointaxis, jointvalue, NULL, NULL, listInstanceScope));
         }
     }
@@ -3433,7 +3519,11 @@ private:
             for(size_t imodel = 0; imodel < pscene->getInstance_physics_model_array().getCount(); ++imodel) {
                 domInstance_physics_modelRef ipmodel = pscene->getInstance_physics_model_array()[imodel];
                 domPhysics_modelRef pmodel = daeSafeCast<domPhysics_model> (ipmodel->getUrl().getElement().cast());
-                domNodeRef nodephysicsoffset = daeSafeCast<domNode>(ipmodel->getParent().getElement().cast());
+                domNodeRef nodephysicsoffset;
+                // don't bother getting the node parent if ID is empty, since it will generate warning message
+                if( ipmodel->getParent().id().size() ) {
+                    nodephysicsoffset = daeSafeCast<domNode>(ipmodel->getParent().getElement().cast());
+                }
                 std::list<ModelBinding>::iterator itmodelbindings = _FindParentModel(nodephysicsoffset,bindings.listModelBindings);
                 if( itmodelbindings == bindings.listModelBindings.end() ) {
                     itmodelbindings = _FindChildModel(nodephysicsoffset,bindings.listModelBindings);
@@ -3592,7 +3682,7 @@ private:
         return KinBody::LinkPtr();
     }
 
-    /// \brief extracts collision-specific data info
+    /// \brief extracts collision-specific data infoe
     InterfaceTypePtr _ExtractCollisionData(KinBodyPtr pbody, daeElementRef referenceElt, const domExtra_Array& arr, const std::list<LinkBinding>& listLinkBindings) {
         for(size_t i = 0; i < arr.getCount(); ++i) {
             if( strcmp(arr[i]->getType(),"collision") == 0 ) {
@@ -4344,6 +4434,19 @@ private:
             // try to resolve again
             return _ResolveInverse(itindex->second);
         }
+
+        daeURI baseuri(uri);
+        baseuri.query("");
+        baseuri.fragment("");
+        baseuri.id("");
+        itindex = _mapInverseResolvedURIList.find(baseuri.str());
+        if( itindex != _mapInverseResolvedURIList.end() ) {
+            daeURI newuri = _ResolveInverse(itindex->second);
+            newuri.query(uri.query());
+            newuri.fragment(uri.fragment());
+            newuri.id(uri.fragment());
+            return newuri;
+        }
         return uri;
     }
 
@@ -4401,14 +4504,16 @@ private:
     string _prefix;
     int _nGlobalSensorId, _nGlobalManipulatorId, _nGlobalIndex;
     std::string _filename;
-    bool _bOpeningZAE; ///< true if currently opening a zae
-    bool _bSkipGeometry;
     std::set<KinBody::LinkPtr> _setInitialLinks;
     std::set<KinBody::JointPtr> _setInitialJoints;
     std::set<RobotBase::ManipulatorPtr> _setInitialManipulators;
     std::set<RobotBase::AttachedSensorPtr> _setInitialSensors;
     std::vector<std::string> _vOpenRAVESchemeAliases;
     std::map<std::string,daeURI> _mapInverseResolvedURIList; ///< holds a list of inverse resolved relationships file:// -> openrave://
+
+    bool _bOpeningZAE; ///< true if currently opening a zae
+    bool _bSkipGeometry;
+    bool _bBackCompatValuesInRadians; ///< if true, will assume the speed, acceleration, and dofvalues are in radians instead of degrees (for back compat)
 };
 
 bool RaveParseColladaURI(EnvironmentBasePtr penv, const std::string& uri,const AttributesList& atts)
@@ -4421,7 +4526,33 @@ bool RaveParseColladaURI(EnvironmentBasePtr penv, const std::string& uri,const A
     return reader.Extract();
 }
 
-bool RaveParseColladaFile(EnvironmentBasePtr penv, const string& filename,const AttributesList& atts)
+bool RaveParseColladaURI(EnvironmentBasePtr penv, KinBodyPtr& pbody, const string& uri, const AttributesList& atts)
+{
+    boost::mutex::scoped_lock lock(GetGlobalDAEMutex());
+    ColladaReader reader(penv);
+    if (!reader.InitFromURI(uri,atts)) {
+        return false;
+    }
+    // have to extract the fragment
+    std::string scheme, authority, path, query, fragment;
+    cdom::parseUriRef(uri, scheme, authority, path, query, fragment);
+    return reader.Extract(pbody, fragment);
+}
+
+bool RaveParseColladaURI(EnvironmentBasePtr penv, RobotBasePtr& probot, const string& uri, const AttributesList& atts)
+{
+    boost::mutex::scoped_lock lock(GetGlobalDAEMutex());
+    ColladaReader reader(penv);
+    if (!reader.InitFromURI(uri,atts)) {
+        return false;
+    }
+    // have to extract the fragment
+    std::string scheme, authority, path, query, fragment;
+    cdom::parseUriRef(uri, scheme, authority, path, query, fragment);
+    return reader.Extract(probot, fragment);
+}
+
+bool RaveParseColladaFile(EnvironmentBasePtr penv, const string& filename, const AttributesList& atts)
 {
     boost::mutex::scoped_lock lock(GetGlobalDAEMutex());
     ColladaReader reader(penv);

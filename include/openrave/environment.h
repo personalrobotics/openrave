@@ -170,7 +170,8 @@ public:
     /// \brief Stops the internal physics loop, stops calling SimulateStep for all modules. <b>[multi-thread safe]</b>
     ///
     /// See \ref arch_simulation for more about the simulation thread.
-    virtual void StopSimulation() = 0;
+    /// \param shutdownthread 
+    virtual void StopSimulation(int shutdownthread=1) = 0;
 
     /// \brief Return true if inner simulation loop is executing. <b>[multi-thread safe]</b>
     ///
@@ -380,6 +381,13 @@ public:
         RAVELOG_WARN("EnvironmentBase::AddSensor deprecated, please use EnvironmentBase::Add\n");
         Add(sensor,bAnonymous);
     }
+
+    /// \brief bodycallback(body, action)
+    ///
+    /// \param body KinBodyPtr
+    /// \param action if 0 body has been removed from the environment (environment id is already reset), if 1 body was just added to environment
+    typedef boost::function<void(KinBodyPtr, int)> BodyCallbackFn;
+    virtual UserDataPtr RegisterBodyCallback(const BodyCallbackFn& callback) = 0;
 
     /// \brief Fill an array with all sensors loaded in the environment. <b>[multi-thread safe]</b>
     ///

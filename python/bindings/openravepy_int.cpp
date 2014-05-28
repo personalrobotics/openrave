@@ -118,6 +118,33 @@ object PyInterfaceBase::GetUserData(const std::string& key) const {
     return openravepy::GetUserData(_pbase->GetUserData(key));
 }
 
+object PyInterfaceBase::SendCommand(const string& in, bool releasegil, bool lockenv)
+{
+    stringstream sin(in), sout;
+    {
+        openravepy::PythonThreadSaverPtr statesaver;
+        openravepy::PyEnvironmentLockSaverPtr envsaver;
+        if( releasegil ) {
+            statesaver.reset(new openravepy::PythonThreadSaver());
+            if( lockenv ) {
+                // GIL is already released, so use a regular environment lock
+                envsaver.reset(new openravepy::PyEnvironmentLockSaver(_pyenv, true));
+            }
+        }
+        else {
+            if( lockenv ) {
+                // try to safely lock the environment first
+                envsaver.reset(new openravepy::PyEnvironmentLockSaver(_pyenv, false));
+            }
+        }
+        sout << std::setprecision(std::numeric_limits<dReal>::digits10+1);     /// have to do this or otherwise precision gets lost
+        if( !_pbase->SendCommand(sout,sin) ) {
+            return object();
+        }
+    }
+    return object(sout.str());
+}
+
 object PyInterfaceBase::GetReadableInterfaces()
 {
     boost::python::dict ointerfaces;
@@ -217,12 +244,12 @@ protected:
     }
 
 public:
-    PyEnvironmentBase()
+    PyEnvironmentBase(int options=ECO_StartSimulationThread)
     {
         if( !RaveGlobalState() ) {
             RaveInitialize(true);
         }
-        _penv = RaveCreateEnvironment();
+        _penv = RaveCreateEnvironment(options);
     }
     PyEnvironmentBase(EnvironmentBasePtr penv) : _penv(penv) {
     }
@@ -897,8 +924,8 @@ public:
     void StartSimulation(dReal fDeltaTime, bool bRealTime=true) {
         _penv->StartSimulation(fDeltaTime,bRealTime);
     }
-    void StopSimulation() {
-        _penv->StopSimulation();
+    void StopSimulation(int shutdownthread=1) {
+        _penv->StopSimulation(shutdownthread);
     }
     uint64_t GetSimulationTime() {
         return _penv->GetSimulationTime();
@@ -909,7 +936,23 @@ public:
 
     void Lock()
     {
-        Py_BEGIN_ALLOW_THREADS;
+        // first try to lock without releasing the GIL since it is faster
+        uint64_t nTimeoutMicroseconds = 2000; // 2ms
+        uint64_t basetime = OpenRAVE::utils::GetMicroTime();
+        while(OpenRAVE::utils::GetMicroTime()-basetime<nTimeoutMicroseconds ) {
+            if( TryLock() ) {
+                return;
+            }
+            boost::this_thread::sleep(boost::posix_time::microseconds(10));
+        }
+
+        // failed, so must be a python thread blocking it...
+        LockReleaseGil();
+    }
+
+    /// \brief raw locking without any python overhead
+    void LockRaw()
+    {
 #if BOOST_VERSION < 103500
         boost::mutex::scoped_lock envlock(_envmutex);
         if( _listfreelocks.size() > 0 ) {
@@ -922,8 +965,14 @@ public:
 #else
         _penv->GetMutex().lock();
 #endif
-        Py_END_ALLOW_THREADS;
     }
+
+    void LockReleaseGil()
+    {
+        PythonThreadSaver saver;
+        LockRaw();
+    }
+
     void Unlock()
     {
 #if BOOST_VERSION < 103500
@@ -936,10 +985,11 @@ public:
 #endif
     }
 
-    bool TryLock()
+    /// try locking the environment while releasing the GIL. This can get into a deadlock after env lock is acquired and before gil is re-acquired
+    bool TryLockReleaseGil()
     {
         bool bSuccess = false;
-        Py_BEGIN_ALLOW_THREADS;
+        PythonThreadSaver saver;
 #if BOOST_VERSION < 103500
         boost::shared_ptr<EnvironmentMutex::scoped_try_lock> lockenv(new EnvironmentMutex::scoped_try_lock(GetEnv()->GetMutex(),false));
         if( !!lockenv->try_lock() ) {
@@ -951,10 +1001,25 @@ public:
             bSuccess = true;
         }
 #endif
-        Py_END_ALLOW_THREADS;
         return bSuccess;
     }
 
+    bool TryLock()
+    {
+        bool bSuccess = false;
+#if BOOST_VERSION < 103500
+        boost::shared_ptr<EnvironmentMutex::scoped_try_lock> lockenv(new EnvironmentMutex::scoped_try_lock(GetEnv()->GetMutex(),false));
+        if( !!lockenv->try_lock() ) {
+            bSuccess = true;
+            _listenvlocks.push_back(boost::shared_ptr<EnvironmentMutex::scoped_lock>(new EnvironmentMutex::scoped_lock(_penv->GetMutex())));
+        }
+#else
+        if( _penv->GetMutex().try_lock() ) {
+            bSuccess = true;
+        }
+#endif
+        return bSuccess;
+    }
 
 
     bool Lock(float timeout)
@@ -1363,6 +1428,20 @@ void UnlockEnvironment(PyEnvironmentBasePtr pyenv)
     pyenv->Unlock();
 }
 
+PyEnvironmentLockSaver::PyEnvironmentLockSaver(PyEnvironmentBasePtr pyenv, bool braw) : _pyenv(pyenv)
+{
+    if( braw ) {
+        _pyenv->LockRaw();
+    }
+    else {
+        _pyenv->Lock();
+    }
+}
+PyEnvironmentLockSaver::~PyEnvironmentLockSaver()
+{
+    _pyenv->Unlock();
+}
+
 object RaveGetEnvironments()
 {
     std::list<EnvironmentBasePtr> listenvironments;
@@ -1399,6 +1478,7 @@ PyInterfaceBasePtr RaveCreateInterface(PyEnvironmentBasePtr pyenv, InterfaceType
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(LoadURI_overloads, LoadURI, 1, 2)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetCamera_overloads, SetCamera, 2, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(StartSimulation_overloads, StartSimulation, 1, 2)
+BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(StopSimulation_overloads, StopSimulation, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetViewer_overloads, SetViewer, 1, 2)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(CheckCollisionRays_overloads, CheckCollisionRays, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(plot3_overloads, plot3, 2, 4)
@@ -1407,7 +1487,7 @@ BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(drawlinelist_overloads, drawlinelist, 2, 
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(drawarrow_overloads, drawarrow, 2, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(drawbox_overloads, drawbox, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(drawtrimesh_overloads, drawtrimesh, 1, 3)
-BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SendCommand_overloads, SendCommand, 1, 2)
+BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SendCommand_overloads, SendCommand, 1, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(Add_overloads, Add, 1, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(Save_overloads, Save, 1, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(GetUserData_overloads, GetUserData, 0, 1)
@@ -1421,6 +1501,17 @@ object get_openrave_exception_unicode(openrave_exception* p)
 std::string get_openrave_exception_repr(openrave_exception* p)
 {
     return boost::str(boost::format("<openrave_exception('%s',ErrorCode.%s)>")%p->message()%GetErrorCodeString(p->GetCode()));
+}
+
+object get_std_runtime_error_unicode(std::runtime_error* p)
+{
+    std::string s(p->what());
+    return ConvertStringToUnicode(s);
+}
+
+std::string get_std_runtime_error_repr(std::runtime_error* p)
+{
+    return boost::str(boost::format("<std_exception('%s')>")%p->what());
 }
 
 }
@@ -1453,7 +1544,17 @@ BOOST_PYTHON_MODULE(openravepy_int)
     .def( "__repr__", get_openrave_exception_repr)
     ;
     exception_translator<openrave_exception>();
+    class_< std::runtime_error >( "_std_runtime_error_", no_init)
+    .def( init<const std::string&>() )
+    .def( init<const std::runtime_error&>() )
+    .def( "message", &std::runtime_error::what)
+    .def( "__str__", &std::runtime_error::what)
+    .def( "__unicode__", get_std_runtime_error_unicode)
+    .def( "__repr__", get_std_runtime_error_repr)
+    ;
     exception_translator<std::runtime_error>();
+    //exception_translator<std::exception>();
+    class_< boost::bad_function_call, bases<std::runtime_error> >( "_boost_bad_function_call_");
     exception_translator<boost::bad_function_call>();
 
     class_<PyEnvironmentBase, PyEnvironmentBasePtr > classenv("Environment", DOXY_CLASS(EnvironmentBase));
@@ -1468,7 +1569,8 @@ In C++ the syntax is::\n\n  success = SendCommand(OUT, IN)\n\n\
 In python, the syntax is::\n\n\
   OUT = SendCommand(IN,releasegil)\n\
   success = OUT is not None\n\n\n\
-The **releasegil** parameter controls whether the python Global Interpreter Lock should be released when executing this code. For calls that take a long time and if there are many threads running called from different python threads, releasing the GIL could speed up things a lot. Please keep in mind that releasing and re-acquiring the GIL also takes computation time.\n");
+The **releasegil** parameter controls whether the python Global Interpreter Lock should be released when executing this code. For calls that take a long time and if there are many threads running called from different python threads, releasing the GIL could speed up things a lot. Please keep in mind that releasing and re-acquiring the GIL also takes computation time.\n\
+Because race conditions can pop up when trying to lock the openrave environment without releasing the GIL, if lockenv=True is specified, the system can try to safely lock the openrave environment without causing a deadlock with the python GIL and other threads.\n");
         class_<PyInterfaceBase, boost::shared_ptr<PyInterfaceBase> >("Interface", DOXY_CLASS(InterfaceBase), no_init)
         .def("GetInterfaceType",&PyInterfaceBase::GetInterfaceType, DOXY_FN(InterfaceBase,GetInterfaceType))
         .def("GetXMLId",&PyInterfaceBase::GetXMLId, DOXY_FN(InterfaceBase,GetXMLId))
@@ -1483,7 +1585,7 @@ The **releasegil** parameter controls whether the python Global Interpreter Lock
         .def("SetUserData",setuserdata4,args("key", "data"), DOXY_FN(InterfaceBase,SetUserData))
         .def("RemoveUserData", &PyInterfaceBase::RemoveUserData, DOXY_FN(InterfaceBase, RemoveUserData))
         .def("GetUserData",&PyInterfaceBase::GetUserData, GetUserData_overloads(args("key"), DOXY_FN(InterfaceBase,GetUserData)))
-        .def("SendCommand",&PyInterfaceBase::SendCommand,SendCommand_overloads(args("cmd","releasegil"), sSendCommandDoc.c_str()))
+        .def("SendCommand",&PyInterfaceBase::SendCommand, SendCommand_overloads(args("cmd","releasegil","lockenv"), sSendCommandDoc.c_str()))
         .def("GetReadableInterfaces",&PyInterfaceBase::GetReadableInterfaces,DOXY_FN(InterfaceBase,GetReadableInterfaces))
         .def("GetReadableInterface",&PyInterfaceBase::GetReadableInterface,DOXY_FN(InterfaceBase,GetReadableInterface))
         .def("SetReadableInterface",&PyInterfaceBase::SetReadableInterface,args("xmltag","xmlreadable"), DOXY_FN(InterfaceBase,SetReadableInterface))
@@ -1547,7 +1649,7 @@ The **releasegil** parameter controls whether the python Global Interpreter Lock
         object (PyEnvironmentBase::*readtrimeshfile1)(const std::string&) = &PyEnvironmentBase::ReadTrimeshURI;
         object (PyEnvironmentBase::*readtrimeshfile2)(const std::string&,object) = &PyEnvironmentBase::ReadTrimeshURI;
         scope env = classenv
-                    .def(init<>())
+                    .def(init<optional<int> >(args("options")))
                     .def("Reset",&PyEnvironmentBase::Reset, DOXY_FN(EnvironmentBase,Reset))
                     .def("Destroy",&PyEnvironmentBase::Destroy, DOXY_FN(EnvironmentBase,Destroy))
                     .def("CloneSelf",&PyEnvironmentBase::CloneSelf,args("options"), DOXY_FN(EnvironmentBase,CloneSelf))
@@ -1631,7 +1733,7 @@ The **releasegil** parameter controls whether the python Global Interpreter Lock
                     .def("HasRegisteredCollisionCallbacks",&PyEnvironmentBase::HasRegisteredCollisionCallbacks,DOXY_FN(EnvironmentBase,HasRegisteredCollisionCallbacks))
                     .def("StepSimulation",&PyEnvironmentBase::StepSimulation,args("timestep"), DOXY_FN(EnvironmentBase,StepSimulation))
                     .def("StartSimulation",&PyEnvironmentBase::StartSimulation,StartSimulation_overloads(args("timestep","realtime"), DOXY_FN(EnvironmentBase,StartSimulation)))
-                    .def("StopSimulation",&PyEnvironmentBase::StopSimulation, DOXY_FN(EnvironmentBase,StopSimulation))
+                    .def("StopSimulation",&PyEnvironmentBase::StopSimulation, StopSimulation_overloads(args("shutdownthread"), DOXY_FN(EnvironmentBase,StopSimulation)))
                     .def("GetSimulationTime",&PyEnvironmentBase::GetSimulationTime, DOXY_FN(EnvironmentBase,GetSimulationTime))
                     .def("IsSimulationRunning",&PyEnvironmentBase::IsSimulationRunning, DOXY_FN(EnvironmentBase,IsSimulationRunning))
                     .def("Lock",Lock1,"Locks the environment mutex.")

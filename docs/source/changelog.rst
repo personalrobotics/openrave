@@ -56,6 +56,8 @@ Core
 
 * Added python bindings to MultiControllerBase interface and took steps toward making it an official interface (thanks to Michael Koval).
 
+* Added :class:`ElectricMotorActuatorInfo` and the corresponding python bindings and XML readers.
+
 Collision Checking
 -----------------
 
@@ -124,6 +126,13 @@ Planning
 * Added _nRandomGeneratorSeed to :class:`.Planner.PlannerParameters` in order to control all random seeds in the process.
 
 * Constraint parabolic smoother (:ref:`planner-constraintparabolicsmoother`) that reduces number of parabolic arcs, maintains controller timestep constraints, and bounds acceleration (thanks to Cuong Pham)
+
+Physics Engine
+--------------
+
+* Fixes in Bullet Physics Engine to make it behave more realistic.
+
+* XML interface for bullet to tune the parameters.
 
 Python
 ------

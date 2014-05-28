@@ -18,6 +18,7 @@ from ..openravepy_ext import planning_error
 
 from numpy import *
 from copy import copy as shallowcopy
+import cStringIO
 
 import logging
 log = logging.getLogger('openravepy.interfaces.TaskManipulation')
@@ -59,10 +60,11 @@ class TaskManipulation:
         clone.robot = envother.GetRobot(self.robot.GetName())
         envother.Add(clone.prob,True,clone.args)
         return clone
-    def GraspPlanning(self,graspindices=None,grasps=None,target=None,approachoffset=0,destposes=None,seedgrasps=None,seeddests=None,seedik=None,maxiter=None,randomgrasps=None,randomdests=None, execute=None,outputtraj=None,grasptranslationstepmult=None,graspfinestep=None,outputtrajobj=None,gmodel=None):
+    def GraspPlanning(self,graspindices=None,grasps=None,target=None,approachoffset=0,destposes=None,seedgrasps=None,seeddests=None,seedik=None,maxiter=None,randomgrasps=None,randomdests=None, execute=None,outputtraj=None,grasptranslationstepmult=None,graspfinestep=None,outputtrajobj=None,gmodel=None,paddedgeometryinfo=None,steplength=None,releasegil=False):
         """See :ref:`module-taskmanipulation-graspplanning`
 
         If gmodel is specified, then do not have to fill graspindices, grasps, target, grasptranslationstepmult, graspfinestep
+        :param paddedgeometryinfo: (groupname, padding)
         """
         if gmodel is not None:
             if target is None:
@@ -75,42 +77,51 @@ class TaskManipulation:
                 grasptranslationstepmult=gmodel.translationstepmult
             if graspfinestep is None:
                 graspfinestep=gmodel.finestep
-        cmd = 'graspplanning target %s approachoffset %.15e grasps %d %d '%(target.GetName(),approachoffset, grasps.shape[0],grasps.shape[1])
+        cmd = cStringIO.StringIO()
+        cmd.write('graspplanning target %s approachoffset %.15e grasps %d %d '%(target.GetName(),approachoffset, grasps.shape[0],grasps.shape[1]))
         for f in grasps.flat:
-            cmd += str(f) + ' '
+            cmd.write('%.15e '%f)
         for name,valuerange in graspindices.iteritems():
             if name[0] == 'i' and len(valuerange) > 0 or name == 'grasptrans_nocol':
-                cmd += name + ' ' + str(valuerange[0]) + ' '
+                cmd.write(name)
+                cmd.write(' ')
+                cmd.write(str(valuerange[0]))
+                cmd.write(' ')
         if grasptranslationstepmult is not None:
-            cmd += 'grasptranslationstepmult %.15e '%grasptranslationstepmult
+            cmd.write('grasptranslationstepmult %.15e '%grasptranslationstepmult)
         if graspfinestep is not None:
-            cmd += 'graspfinestep %.15e '%graspfinestep
+            cmd.write('graspfinestep %.15e '%graspfinestep)
         if destposes is not None and len(destposes) > 0:
             if len(destposes[0]) == 7: # pose
-                cmd += 'posedests %d '%len(destposes)
+                cmd.write('destposes %d '%len(destposes))
                 for pose in destposes:
-                    cmd += poseSerialization(pose) + ' '
+                    cmd.write(poseSerialization(pose))
+                    cmd.write(' ')
             else:
-                cmd += 'matdests %d '%len(destposes)
+                cmd.write('matdests %d '%len(destposes))
                 for mat in destposes:
-                    cmd += matrixSerialization(mat) + ' '
+                    cmd.write(matrixSerialization(mat) + ' ')
         if seedgrasps is not None:
-            cmd += 'seedgrasps %d '%seedgrasps
+            cmd.write('seedgrasps %d '%seedgrasps)
         if seeddests is not None:
-            cmd += 'seeddests %d '%seeddests
+            cmd.write('seeddests %d '%seeddests)
         if seedik is not None:
-            cmd += 'seedik %d '%seedik
+            cmd.write('seedik %d '%seedik)
         if maxiter is not None:
-            cmd += 'maxiter %d '%maxiter
+            cmd.write('maxiter %d '%maxiter)
         if randomgrasps is not None:
-            cmd += 'randomgrasps %d '%randomgrasps
+            cmd.write('randomgrasps %d '%randomgrasps)
         if randomdests is not None:
-            cmd += 'randomdests %d '%randomdests
+            cmd.write('randomdests %d '%randomdests)
+        if steplength is not None:
+            cmd.write('steplength %.15e '%steplength)
         if execute is not None:
-            cmd += 'execute %d '%execute
+            cmd.write('execute %d '%execute)
+        if paddedgeometryinfo is not None:
+            cmd.write('paddedgeometryinfo %s %f '%tuple(paddedgeometryinfo))
         if (outputtraj is not None and outputtraj) or (outputtrajobj is not None and outputtrajobj):
-            cmd += 'outputtraj '
-        res = self.prob.SendCommand(cmd)
+            cmd.write('outputtraj ')
+        res = self.prob.SendCommand(cmd.getvalue(),releasegil=releasegil)
         if res is None:
             raise planning_error()
         resvalues = res.split()
@@ -146,7 +157,8 @@ class TaskManipulation:
         iters = array([int(s) for s in resvalues[0:len(configs)]])
         newconfigs = reshape(array([float64(s) for s in resvalues[len(configs):]]),(len(configs),self.robot.GetActiveDOF()))
         return iters,newconfigs
-    def CloseFingers(self,offset=None,movingdir=None,execute=None,outputtraj=None,outputfinal=None,coarsestep=None,translationstepmult=None,finestep=None,outputtrajobj=None):
+    
+    def ChuckFingers(self,offset=None,movingdir=None,execute=None,outputtraj=None,outputfinal=None,coarsestep=None,translationstepmult=None,finestep=None,outputtrajobj=None):
         """See :ref:`module-taskmanipulation-closefingers`
         """
         cmd = 'CloseFingers '
@@ -164,7 +176,7 @@ class TaskManipulation:
         if (outputtraj is not None and outputtraj) or (outputtrajobj is not None and outputtrajobj):
             cmd += 'outputtraj '
         if outputfinal:
-            cmd += 'outputfinal'
+            cmd += 'outputfinal '
         if translationstepmult is not None:
             cmd += 'translationstepmult %.15e '%translationstepmult
         if finestep is not None:
@@ -185,7 +197,11 @@ class TaskManipulation:
         else:
             traj = None
         return final,traj
-    def ReleaseFingers(self,target=None,movingdir=None,execute=None,outputtraj=None,outputfinal=None,coarsestep=None,translationstepmult=None,finestep=None,outputtrajobj=None):
+    
+    def CloseFingers(self, *args, **kwargs):
+        return self.ChuckFingers(*args, **kwargs)
+    
+    def UnchuckFingers(self,target=None,movingdir=None,execute=None,outputtraj=None,outputfinal=None,coarsestep=None,translationstepmult=None,finestep=None,outputtrajobj=None):
         """See :ref:`module-taskmanipulation-releasefingers`
         """
         cmd = 'ReleaseFingers '
@@ -200,7 +216,7 @@ class TaskManipulation:
         if (outputtraj is not None and outputtraj) or (outputtrajobj is not None and outputtrajobj):
             cmd += 'outputtraj '
         if outputfinal:
-            cmd += 'outputfinal'
+            cmd += 'outputfinal '
         if coarsestep is not None:
             cmd += 'coarsestep %.15e '%coarsestep
         if translationstepmult is not None:
@@ -223,6 +239,10 @@ class TaskManipulation:
         else:
             traj = None
         return final,traj
+
+    def ReleaseFingers(self,*args,**kwargs):
+        return self.UnchuckFingers(*args, **kwargs)
+    
     def ReleaseActive(self,movingdir=None,execute=None,outputtraj=None,outputfinal=None,translationstepmult=None,finestep=None,outputtrajobj=None):
         """See :ref:`module-taskmanipulation-releaseactive`
         """
@@ -256,6 +276,7 @@ class TaskManipulation:
         else:
             traj = None
         return final,traj
+    
     def SwitchModels(self,switchpatterns=None,unregister=None,switchtofat=None,clearpatterns=None,clearmodels=None,update=None):
         """See :ref:`module-taskmanipulation-switchmodels`
         """

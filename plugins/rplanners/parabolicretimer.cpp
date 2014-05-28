@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Copyright (C) 2006-2012 Rosen Diankov <rosen.diankov@gmail.com>
+// Copyright (C) 2006-2014 Rosen Diankov <rosen.diankov@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -46,7 +46,7 @@ public:
     }
 
 protected:
-    GroupInfoPtr CreateGroupInfo(int degree, const ConfigurationSpecification::Group& gpos, const ConfigurationSpecification::Group &gvel) {
+    GroupInfoPtr CreateGroupInfo(int degree, const ConfigurationSpecification& origspec, const ConfigurationSpecification::Group& gpos, const ConfigurationSpecification::Group &gvel) {
         ParabolicGroupInfoPtr g(new ParabolicGroupInfo(degree, gpos, gvel));
         ConfigurationSpecification spec;
         g->posindex = spec.AddGroup(gpos.name, gpos.dof, "quadratic");
@@ -119,22 +119,27 @@ protected:
         }
     }
 
-    bool _CheckVelocitiesJointValues(GroupInfoConstPtr info, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
+    bool _CheckJointValues(GroupInfoConstPtr info, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata, int checkoptions) {
         dReal deltatime = *(itdata+_timeoffset);
         for(int i=0; i < info->gvel.dof; ++i) {
             dReal fvel = *(itdata+info->gvel.offset+i);
-            if( RaveFabs(fvel) > info->_vConfigVelocityLimit.at(i) + ParabolicRamp::EpsilonV ) {
-                return false;
+            if( checkoptions & 2 ) {
+
+                if( RaveFabs(fvel) > info->_vConfigVelocityLimit.at(i) + ParabolicRamp::EpsilonV ) {
+                    return false;
+                }
             }
-            dReal diff = RaveFabs(*(itdataprev+info->gvel.offset+i)-fvel);
-            if( RaveFabs(diff) > info->_vConfigAccelerationLimit.at(i) * deltatime + ParabolicRamp::EpsilonA ) {
-                return false;
+            if( checkoptions & 4 ) {
+                dReal diff = RaveFabs(*(itdataprev+info->gvel.offset+i)-fvel);
+                if( RaveFabs(diff) > info->_vConfigAccelerationLimit.at(i) * deltatime + ParabolicRamp::EpsilonA ) {
+                    return false;
+                }
             }
         }
         return true;
     }
 
-    bool _WriteJointValues(GroupInfoConstPtr inforaw, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::const_iterator itdata) {
+    bool _WriteJointValues(GroupInfoConstPtr inforaw, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
         ParabolicGroupInfoConstPtr info = boost::dynamic_pointer_cast<ParabolicGroupInfo const>(inforaw);
         if( _parameters->_outputaccelchanges ) {
             _v0pos.resize(info->gpos.dof);
@@ -197,16 +202,23 @@ protected:
                     vector<dReal>::iterator it;
                     dReal tswitch1 = curtime+ramp[j].tswitch1;
                     dReal tswitch2 = curtime+ramp[j].tswitch2;
+                    dReal ttotal = curtime+ramp[j].ttotal;
                     if( tswitch1 != 0 ) {
                         it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),tswitch1);
-                        if( *it != tswitch1) {
+                        if( it != vswitchtimes.end() && *it != tswitch1) {
                             vswitchtimes.insert(it,tswitch1);
                         }
                     }
                     if( tswitch1 != tswitch2 && tswitch2 != 0 ) {
                         it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),tswitch2);
-                        if( *it != tswitch2 ) {
+                        if( it != vswitchtimes.end() && *it != tswitch2 ) {
                             vswitchtimes.insert(it,tswitch2);
+                        }
+                    }
+                    if( tswitch2 != ttotal && ttotal != 0 ) {
+                        it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),ttotal);
+                        if( it != vswitchtimes.end() && *it != ttotal ) {
+                            vswitchtimes.insert(it,ttotal);
                         }
                     }
 
@@ -224,6 +236,9 @@ protected:
                     for(size_t iramp = 0; iramp < _ramps.at(j).size(); ++iramp) {
                         if( curtime > _ramps[j][iramp].ttotal ) {
                             curtime -= _ramps[j][iramp].ttotal;
+                            // in case of epsilons, set the last point as the values
+                            *(ittargetdata + info->posindex + j) = _ramps[j][iramp].x1;
+                            *(ittargetdata + info->velindex + j) = _ramps[j][iramp].dx1;
                         }
                         else {
                             *(ittargetdata + info->posindex + j) = _ramps[j][iramp].Evaluate(curtime);
@@ -255,11 +270,11 @@ protected:
         throw OPENRAVE_EXCEPTION_FORMAT0("_ComputeVelocitiesAffine not implemented", ORE_NotImplemented);
     }
 
-    bool _CheckVelocitiesAffine(GroupInfoConstPtr info, int affinedofs, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
-        throw OPENRAVE_EXCEPTION_FORMAT0("_CheckVelocitiesAffine not implemented", ORE_NotImplemented);
+    bool _CheckAffine(GroupInfoConstPtr info, int affinedofs, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata, int checkoptions) {
+        throw OPENRAVE_EXCEPTION_FORMAT0("not implemented", ORE_NotImplemented);
     }
 
-    bool _WriteAffine(GroupInfoConstPtr info, int affinedofs, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::const_iterator itdata) {
+    bool _WriteAffine(GroupInfoConstPtr info, int affinedofs, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
         throw OPENRAVE_EXCEPTION_FORMAT0("_WriteAffine not implemented", ORE_NotImplemented);
     }
 
@@ -310,15 +325,21 @@ protected:
             break;
         case IKP_TranslationDirection5D: {
             dReal angledelta = RaveAcos(min(dReal(1),RaveFabs(ikparamprev.GetTranslationDirection5D().dir.dot3(ikparam.GetTranslationDirection5D().dir))));
-            Vector angularvelocityprev(*(itdataprev+info->gvel.offset+0), *(itdataprev+info->gvel.offset+1), *(itdataprev+info->gvel.offset+2));
-            dReal anglevelprev = RaveSqrt(utils::Sqr(angularvelocityprev.y) + utils::Sqr(angularvelocityprev.z) + utils::Sqr(angularvelocityprev.w));
-            Vector angularvelocity(*(itdata+info->gvel.offset+0), *(itdata+info->gvel.offset+1), *(itdata+info->gvel.offset+2));
-            dReal anglevel = RaveSqrt(utils::Sqr(angularvelocity.y) + utils::Sqr(angularvelocity.z) + utils::Sqr(angularvelocity.w));
-            if( !ParabolicRamp::SolveMinTimeBounded(0,anglevelprev,angledelta,anglevel, info->_vConfigAccelerationLimit.at(0), info->_vConfigVelocityLimit.at(0), -1000,angledelta+1000, ramp) ) {
-                RAVELOG_WARN("failed solving mintime for angles\n");
-                return -1;
+            // the acos really messes up the precision even if the two dirs are within 1e-16, the acos error could be > 1e-8
+            if( angledelta > ParabolicRamp::EpsilonX*100 ) {
+                Vector angularvelocityprev(*(itdataprev+info->gvel.offset+0), *(itdataprev+info->gvel.offset+1), *(itdataprev+info->gvel.offset+2));
+                dReal anglevelprev = RaveSqrt(utils::Sqr(angularvelocityprev.y) + utils::Sqr(angularvelocityprev.z) + utils::Sqr(angularvelocityprev.w));
+                Vector angularvelocity(*(itdata+info->gvel.offset+0), *(itdata+info->gvel.offset+1), *(itdata+info->gvel.offset+2));
+                dReal anglevel = RaveSqrt(utils::Sqr(angularvelocity.y) + utils::Sqr(angularvelocity.z) + utils::Sqr(angularvelocity.w));
+                if( !ParabolicRamp::SolveMinTimeBounded(0,anglevelprev,angledelta,anglevel, info->_vConfigAccelerationLimit.at(0), info->_vConfigVelocityLimit.at(0), -1000,angledelta+1000, ramp) ) {
+                    RAVELOG_WARN("failed solving mintime for angles\n");
+                    return -1;
+                }
+                mintime = ramp.EndTime();
             }
-            mintime = ramp.EndTime();
+            else {
+                mintime = 0;
+            }
             transdelta = ikparam.GetTranslationDirection5D().pos-ikparamprev.GetTranslationDirection5D().pos;
             transoffset = 3;
             break;
@@ -365,7 +386,8 @@ protected:
         }
     }
 
-    bool _CheckVelocitiesIk(GroupInfoConstPtr info, IkParameterizationType iktype, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
+    bool _CheckIk(GroupInfoConstPtr info, IkParameterizationType iktype, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata, int checkoptions)
+    {
         dReal deltatime = *(itdata+_timeoffset);
         int transoffset = -1;
         IkParameterization ikparamprev;
@@ -445,7 +467,7 @@ protected:
         return true;
     }
 
-    bool _WriteIk(GroupInfoConstPtr inforaw, IkParameterizationType iktype, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::const_iterator itdata) {
+    bool _WriteIk(GroupInfoConstPtr inforaw, IkParameterizationType iktype, std::vector<dReal>::const_iterator itorgdiff, std::vector<dReal>::const_iterator itdataprev, std::vector<dReal>::iterator itdata) {
         ParabolicGroupInfoConstPtr info = boost::dynamic_pointer_cast<ParabolicGroupInfo const>(inforaw);
         if( _parameters->_outputaccelchanges ) {
             dReal deltatime = *(itdata+_timeoffset);
@@ -519,9 +541,12 @@ protected:
                 axisangle = ikparamprev.GetTranslationDirection5D().dir.cross(ikparam.GetTranslationDirection5D().dir);
                 if( axisangle.lengthsqr3() > g_fEpsilon ) {
                     axisangle.normalize3();
+                    _v1pos[0] = RaveAcos(min(dReal(1),RaveFabs(ikparamprev.GetTranslationDirection5D().dir.dot3(ikparam.GetTranslationDirection5D().dir))));
+                }
+                else {
+                    _v1pos[0] = 0;
                 }
                 _v0pos[0] = 0;
-                _v1pos[0] = RaveAcos(min(dReal(1),RaveFabs(ikparamprev.GetTranslationDirection5D().dir.dot3(ikparam.GetTranslationDirection5D().dir))));
                 Vector angularvelocityprev(*(itdataprev+info->gvel.offset+0), *(itdataprev+info->gvel.offset+1), *(itdataprev+info->gvel.offset+2));
                 _v0vel[0] = RaveSqrt(utils::Sqr(angularvelocityprev.y) + utils::Sqr(angularvelocityprev.z) + utils::Sqr(angularvelocityprev.w));
                 Vector angularvelocity(*(itdata+info->gvel.offset+0), *(itdata+info->gvel.offset+1), *(itdata+info->gvel.offset+2));
@@ -601,16 +626,23 @@ protected:
                     vector<dReal>::iterator it;
                     dReal tswitch1 = curtime+ramp[j].tswitch1;
                     dReal tswitch2 = curtime+ramp[j].tswitch2;
+                    dReal ttotal = curtime+ramp[j].ttotal;
                     if( tswitch1 != 0 ) {
                         it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),tswitch1);
-                        if( *it != tswitch1) {
+                        if( it != vswitchtimes.end() && *it != tswitch1) {
                             vswitchtimes.insert(it,tswitch1);
                         }
                     }
                     if( tswitch1 != tswitch2 && tswitch2 != 0 ) {
                         it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),tswitch2);
-                        if( *it != tswitch2 ) {
+                        if( it != vswitchtimes.end() && *it != tswitch2 ) {
                             vswitchtimes.insert(it,tswitch2);
+                        }
+                    }
+                    if( tswitch2 != ttotal && ttotal != 0 ) {
+                        it = lower_bound(vswitchtimes.begin(),vswitchtimes.end(),ttotal);
+                        if( it != vswitchtimes.end() && *it != ttotal ) {
+                            vswitchtimes.insert(it,ttotal);
                         }
                     }
 

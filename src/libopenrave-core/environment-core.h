@@ -23,6 +23,8 @@
 #include <boost/filesystem/operations.hpp>
 #endif
 
+#include <pcrecpp.h>
+
 #define CHECK_INTERFACE(pinterface) { \
         if( (pinterface)->GetEnv() != shared_from_this() ) \
             throw openrave_exception(str(boost::format("Interface %s:%s is from a different environment")%RaveGetInterfaceName((pinterface)->GetInterfaceType())%(pinterface)->GetXMLId()),ORE_InvalidArguments); \
@@ -73,7 +75,7 @@ public:
         virtual ~CollisionCallbackData() {
             boost::shared_ptr<Environment> penv = _pweakenv.lock();
             if( !!penv ) {
-                EnvironmentMutex::scoped_lock lock(penv->GetMutex());
+                boost::timed_mutex::scoped_lock lock(penv->_mutexInterfaces);
                 penv->_listRegisteredCollisionCallbacks.erase(_iterator);
             }
         }
@@ -86,11 +88,32 @@ protected:
     friend class CollisionCallbackData;
     typedef boost::shared_ptr<CollisionCallbackData> CollisionCallbackDataPtr;
 
+    class BodyCallbackData : public UserData
+    {
+public:
+        BodyCallbackData(const BodyCallbackFn& callback, boost::shared_ptr<Environment> penv) : _callback(callback), _pweakenv(penv) {
+        }
+        virtual ~BodyCallbackData() {
+            boost::shared_ptr<Environment> penv = _pweakenv.lock();
+            if( !!penv ) {
+                boost::timed_mutex::scoped_lock lock(penv->_mutexInterfaces);
+                penv->_listRegisteredBodyCallbacks.erase(_iterator);
+            }
+        }
+
+        list<UserDataWeakPtr>::iterator _iterator;
+        BodyCallbackFn _callback;
+protected:
+        boost::weak_ptr<Environment> _pweakenv;
+    };
+    friend class BodyCallbackData;
+    typedef boost::shared_ptr<BodyCallbackData> BodyCallbackDataPtr;
+
 public:
     Environment() : EnvironmentBase()
     {
         _homedirectory = RaveGetHomeDirectory();
-        RAVELOG_DEBUG(str(boost::format("setting openrave home directory to %s")%_homedirectory));
+        RAVELOG_DEBUG_FORMAT("setting openrave home directory to %s", _homedirectory);
 
         _nBodiesModifiedStamp = 0;
         _nEnvironmentIndex = 1;
@@ -114,7 +137,7 @@ public:
         Destroy();
     }
 
-    virtual void Init()
+    virtual void Init(bool bStartSimulationThread=true)
     {
         boost::mutex::scoped_lock lockinit(_mutexInit);
         if( _bInit ) {
@@ -173,11 +196,10 @@ public:
         else {
             RAVELOG_WARN("failed to find any collision checker.\n");
         }
-        if( !!_threadSimulation ) {
-            _threadSimulation->join();
-        }
 
-        _threadSimulation.reset(new boost::thread(boost::bind(&Environment::_SimulationThread,this)));
+        if( bStartSimulationThread ) {
+            _StartSimulationThread();
+        }
     }
 
     virtual void Destroy()
@@ -192,15 +214,12 @@ public:
         _bInit = false;
 
         RAVELOG_VERBOSE("Environment destructor\n");
-        if( !!_threadSimulation ) {
-            _threadSimulation->join();     // might not return?
-        }
-        _threadSimulation.reset();
+        _StopSimulationThread();
 
         // destroy the modules (their destructors could attempt to lock environment, so have to do it before global lock)
         // however, do not clear the _listModules yet
         RAVELOG_DEBUG("destroy module\n");
-        list<ModuleBasePtr> listModules;
+        list< pair<ModuleBasePtr, std::string> > listModules;
         list<ViewerBasePtr> listViewers = _listViewers;
         {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
@@ -208,14 +227,14 @@ public:
             listViewers = _listViewers;
         }
         FOREACH(itmodule,listModules) {
-            (*itmodule)->Destroy();
+            itmodule->first->Destroy();
         }
         listModules.clear();
 
         FOREACH(itviewer, listViewers) {
             // don't reset the viewer since it can already be dead
             // todo: this call could lead into a deadlock if a SIGINT got called from the viewer thread
-            RAVELOG_DEBUG(str(boost::format("quitting viewer %s")%(*itviewer)->GetXMLId()));
+            RAVELOG_DEBUG_FORMAT("quitting viewer %s", (*itviewer)->GetXMLId());
             (*itviewer)->quitmainloop();
         }
         listViewers.clear();
@@ -283,6 +302,7 @@ public:
         if( !!_pCurrentChecker ) {
             _pCurrentChecker->DestroyEnvironment();
         }
+        std::vector<KinBodyPtr> vcallbackbodies;
         {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
             boost::mutex::scoped_lock locknetworkid(_mutexEnvironmentIds);
@@ -291,10 +311,16 @@ public:
                 (*itbody)->_environmentid=0;
                 (*itbody)->Destroy();
             }
+            if( _listRegisteredBodyCallbacks.size() > 0 ) {
+                vcallbackbodies.insert(vcallbackbodies.end(), _vecbodies.begin(), _vecbodies.end());
+            }
             _vecbodies.clear();
             FOREACH(itrobot,_vecrobots) {
                 (*itrobot)->_environmentid=0;
                 (*itrobot)->Destroy();
+            }
+            if( _listRegisteredBodyCallbacks.size() > 0 ) {
+                vcallbackbodies.insert(vcallbackbodies.end(), _vecrobots.begin(), _vecrobots.end());
             }
             _vecrobots.clear();
             _vPublishedBodies.clear();
@@ -308,15 +334,21 @@ public:
             }
             _listSensors.clear();
         }
+        if( vcallbackbodies.size() > 0 ) {
+            FOREACH(itbody, vcallbackbodies) {
+                _CallBodyCallbacks(*itbody, 0);
+            }
+            vcallbackbodies.clear();
+        }
 
-        list<ModuleBasePtr> listModules;
+        list< pair<ModuleBasePtr, std::string> > listModules;
         {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
             listModules = _listModules;
         }
 
         FOREACH(itmodule,listModules) {
-            (*itmodule)->Reset();
+            itmodule->first->Reset();
         }
         listModules.clear();
         _listOwnedInterfaces.clear();
@@ -367,12 +399,12 @@ public:
         CHECK_INTERFACE(module);
         int ret = module->main(cmdargs);
         if( ret != 0 ) {
-            RAVELOG_WARN(str(boost::format("Error %d with executing module %s\n")%ret%module->GetXMLId()));
+            RAVELOG_WARN_FORMAT("Error %d with executing module %s", ret%module->GetXMLId());
         }
         else {
             EnvironmentMutex::scoped_lock lockenv(GetMutex());
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
-            _listModules.push_back(module);
+            _listModules.push_back(make_pair(module, cmdargs));
         }
 
         return ret;
@@ -382,14 +414,20 @@ public:
     {
         if( timeout == 0 ) {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
-            listModules = _listModules;
+            listModules.clear();
+            FOREACHC(it, _listModules) {
+                listModules.push_back(it->first);
+            }
         }
         else {
             boost::timed_mutex::scoped_timed_lock lock(_mutexInterfaces, boost::get_system_time() + boost::posix_time::microseconds(timeout));
             if (!lock.owns_lock()) {
                 throw OPENRAVE_EXCEPTION_FORMAT("timeout of %f s failed",(1e-6*static_cast<double>(timeout)),ORE_Timeout);
             }
-            listModules = _listModules;
+            listModules.clear();
+            FOREACHC(it, _listModules) {
+                listModules.push_back(it->first);
+            }
         }
     }
 
@@ -402,12 +440,17 @@ public:
     {
         EnvironmentMutex::scoped_lock lockenv(GetMutex());
         OpenRAVEXMLParser::GetXMLErrorCount() = 0;
-        if( _IsColladaFile(filename) ) {
+        if( _IsColladaURI(filename) ) {
+            if( RaveParseColladaURI(shared_from_this(), filename, atts) ) {
+                return true;
+            }
+        }
+        else if( _IsColladaFile(filename) ) {
             if( RaveParseColladaFile(shared_from_this(), filename, atts) ) {
                 return true;
             }
         }
-        if( _IsXFile(filename) ) {
+        else if( _IsXFile(filename) ) {
             RobotBasePtr robot;
             if( RaveParseXFile(shared_from_this(), robot, filename, atts) ) {
                 _AddRobot(robot, true);
@@ -457,7 +500,7 @@ public:
                 if( itatt->first == "target" ) {
                     KinBodyPtr pbody = GetKinBody(itatt->second);
                     if( !pbody ) {
-                        RAVELOG_WARN(str(boost::format("failed to get body %s")%itatt->second));
+                        RAVELOG_WARN_FORMAT("failed to get body %s", itatt->second);
                     }
                     else {
                         listbodies.push_back(pbody);
@@ -548,7 +591,8 @@ public:
         _pCurrentChecker->InitKinBody(pbody);
         _pPhysicsEngine->InitKinBody(pbody);
         // send all the changed callbacks of the body since anything could have changed
-        pbody->_ParametersChanged(0xffffffff&~KinBody::Prop_JointMimic&~KinBody::Prop_LinkStatic);
+        pbody->_PostprocessChangedParameters(0xffffffff&~KinBody::Prop_JointMimic&~KinBody::Prop_LinkStatic);
+        _CallBodyCallbacks(pbody, 1);
     }
 
     virtual void _AddRobot(RobotBasePtr robot, bool bAnonymous)
@@ -583,7 +627,8 @@ public:
         _pCurrentChecker->InitKinBody(robot);
         _pPhysicsEngine->InitKinBody(robot);
         // send all the changed callbacks of the body since anything could have changed
-        robot->_ParametersChanged(0xffffffff&~KinBody::Prop_JointMimic&~KinBody::Prop_LinkStatic);
+        robot->_PostprocessChangedParameters(0xffffffff&~KinBody::Prop_JointMimic&~KinBody::Prop_LinkStatic);
+        _CallBodyCallbacks(robot, 1);
     }
 
     virtual void _AddSensor(SensorBasePtr psensor, bool bAnonymous)
@@ -614,39 +659,42 @@ public:
     virtual bool Remove(InterfaceBasePtr pinterface)
     {
         EnvironmentMutex::scoped_lock lockenv(GetMutex());
-        boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
         CHECK_INTERFACE(pinterface);
         switch(pinterface->GetInterfaceType()) {
         case PT_KinBody:
         case PT_Robot: {
             KinBodyPtr pbody = RaveInterfaceCast<KinBody>(pinterface);
-            vector<KinBodyPtr>::iterator it = std::find(_vecbodies.begin(), _vecbodies.end(), pbody);
-            if( it == _vecbodies.end() ) {
-                return false;
-            }
-            // before deleting, make sure no robots are grabbing it!!
-            FOREACH(itrobot, _vecrobots) {
-                if( (*itrobot)->IsGrabbing(*it) ) {
-                    RAVELOG_WARN("destroy %s already grabbed by robot %s!\n", pbody->GetName().c_str(), (*itrobot)->GetName().c_str());
-                    (*itrobot)->Release(pbody);
+            {
+                boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
+                vector<KinBodyPtr>::iterator it = std::find(_vecbodies.begin(), _vecbodies.end(), pbody);
+                if( it == _vecbodies.end() ) {
+                    return false;
                 }
-            }
+                // before deleting, make sure no robots are grabbing it!!
+                FOREACH(itrobot, _vecrobots) {
+                    if( (*itrobot)->IsGrabbing(*it) ) {
+                        RAVELOG_WARN("destroy %s already grabbed by robot %s!\n", pbody->GetName().c_str(), (*itrobot)->GetName().c_str());
+                        (*itrobot)->Release(pbody);
+                    }
+                }
 
-            if( (*it)->IsRobot() ) {
-                vector<RobotBasePtr>::iterator itrobot = std::find(_vecrobots.begin(), _vecrobots.end(), RaveInterfaceCast<RobotBase>(pbody));
-                if( itrobot != _vecrobots.end() ) {
-                    _vecrobots.erase(itrobot);
+                if( (*it)->IsRobot() ) {
+                    vector<RobotBasePtr>::iterator itrobot = std::find(_vecrobots.begin(), _vecrobots.end(), RaveInterfaceCast<RobotBase>(pbody));
+                    if( itrobot != _vecrobots.end() ) {
+                        _vecrobots.erase(itrobot);
+                    }
                 }
+                if( !!_pCurrentChecker ) {
+                    _pCurrentChecker->RemoveKinBody(*it);
+                }
+                if( !!_pPhysicsEngine ) {
+                    _pPhysicsEngine->RemoveKinBody(*it);
+                }
+                RemoveEnvironmentId(pbody);
+                _vecbodies.erase(it);
+                _nBodiesModifiedStamp++;
             }
-            if( !!_pCurrentChecker ) {
-                _pCurrentChecker->RemoveKinBody(*it);
-            }
-            if( !!_pPhysicsEngine ) {
-                _pPhysicsEngine->RemoveKinBody(*it);
-            }
-            RemoveEnvironmentId(pbody);
-            _vecbodies.erase(it);
-            _nBodiesModifiedStamp++;
+            _CallBodyCallbacks(pbody, 0);
             return true;
         }
         case PT_Sensor: {
@@ -660,12 +708,13 @@ public:
             break;
         }
         case PT_Module: {
-            ModuleBasePtr prob = RaveInterfaceCast<ModuleBase>(pinterface);
-            list<ModuleBasePtr>::iterator itmodule = find(_listModules.begin(), _listModules.end(), prob);
-            if( itmodule != _listModules.end() ) {
-                (*itmodule)->Destroy();
-                _listModules.erase(itmodule);
-                return true;
+            ModuleBasePtr pmodule = RaveInterfaceCast<ModuleBase>(pinterface);
+            FOREACH(itmodule, _listModules) {
+                if( itmodule->first == pmodule ) {
+                    itmodule->first->Destroy();
+                    _listModules.erase(itmodule);
+                    return true;
+                }
             }
             break;
         }
@@ -680,10 +729,18 @@ public:
             break;
         }
         default:
-            RAVELOG_WARN(str(boost::format("unmanaged interfaces of type %s cannot be removed\n")%RaveGetInterfaceName(pinterface->GetInterfaceType())));
+            RAVELOG_WARN_FORMAT("unmanaged interfaces of type %s cannot be removed", RaveGetInterfaceName(pinterface->GetInterfaceType()));
             break;
         }
         return false;
+    }
+
+    virtual UserDataPtr RegisterBodyCallback(const BodyCallbackFn& callback)
+    {
+        boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
+        BodyCallbackDataPtr pdata(new BodyCallbackData(callback,boost::dynamic_pointer_cast<Environment>(shared_from_this())));
+        pdata->_iterator = _listRegisteredBodyCallbacks.insert(_listRegisteredBodyCallbacks.end(),pdata);
+        return pdata;
     }
 
     virtual KinBodyPtr GetKinBody(const std::string& pname) const
@@ -694,7 +751,6 @@ public:
                 return *it;
             }
         }
-        //RAVELOG_VERBOSE(str(boost::format("Environment::GetKinBody - Error: Unknown body %s\n")%pname));
         return KinBodyPtr();
     }
 
@@ -706,7 +762,6 @@ public:
                 return *it;
             }
         }
-        //RAVELOG_VERBOSE(str(boost::format("Environment::GetRobot - Error: Unknown body %s\n")%pname));
         return RobotBasePtr();
     }
 
@@ -742,7 +797,7 @@ public:
             _SetDefaultGravity();
         }
         else {
-            RAVELOG_DEBUG(str(boost::format("setting %s physics engine\n")%_pPhysicsEngine->GetXMLId()));
+            RAVELOG_DEBUG_FORMAT("setting %s physics engine", _pPhysicsEngine->GetXMLId());
         }
         _pPhysicsEngine->InitEnvironment();
         return true;
@@ -752,20 +807,22 @@ public:
         return _pPhysicsEngine;
     }
 
-    virtual UserDataPtr RegisterCollisionCallback(const CollisionCallbackFn& callback) {
-        EnvironmentMutex::scoped_lock lock(GetMutex());
+    virtual UserDataPtr RegisterCollisionCallback(const CollisionCallbackFn& callback)
+    {
+        boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
         CollisionCallbackDataPtr pdata(new CollisionCallbackData(callback,boost::dynamic_pointer_cast<Environment>(shared_from_this())));
         pdata->_iterator = _listRegisteredCollisionCallbacks.insert(_listRegisteredCollisionCallbacks.end(),pdata);
         return pdata;
     }
     virtual bool HasRegisteredCollisionCallbacks() const
     {
-        EnvironmentMutex::scoped_lock lock(GetMutex());
+        boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
         return _listRegisteredCollisionCallbacks.size() > 0;
     }
 
-    virtual void GetRegisteredCollisionCallbacks(std::list<CollisionCallbackFn>& listcallbacks) const {
-        EnvironmentMutex::scoped_lock lock(GetMutex());
+    virtual void GetRegisteredCollisionCallbacks(std::list<CollisionCallbackFn>& listcallbacks) const
+    {
+        boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
         listcallbacks.clear();
         FOREACHC(it, _listRegisteredCollisionCallbacks) {
             CollisionCallbackDataPtr pdata = boost::dynamic_pointer_cast<CollisionCallbackData>(it->lock());
@@ -788,7 +845,7 @@ public:
             _pCurrentChecker = RaveCreateCollisionChecker(shared_from_this(),"GenericCollisionChecker");
         }
         else {
-            RAVELOG_DEBUG(str(boost::format("setting %s collision checker\n")%_pCurrentChecker->GetXMLId()));
+            RAVELOG_DEBUG_FORMAT("setting %s collision checker", _pCurrentChecker->GetXMLId());
             FOREACH(itbody,_vecbodies) {
                 (*itbody)->_ResetInternalCollisionCache();
             }
@@ -890,7 +947,7 @@ public:
         vector<KinBodyPtr> vecbodies;
         vector<RobotBasePtr> vecrobots;
         list<SensorBasePtr> listSensors;
-        list<ModuleBasePtr> listModules;
+        list< pair<ModuleBasePtr, std::string> > listModules;
         {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
             vecbodies = _vecbodies;
@@ -905,7 +962,7 @@ public:
             }
         }
         FOREACH(itmodule, listModules) {
-            (*itmodule)->SimulationStep(fTimeStep);
+            itmodule->first->SimulationStep(fTimeStep);
         }
 
         // simulate the sensors last (ie, they always reflect the most recent bodies
@@ -1052,7 +1109,12 @@ public:
             }
         }
 
-        if( _IsColladaFile(filename) ) {
+        if( _IsColladaURI(filename) ) {
+            if( !RaveParseColladaURI(shared_from_this(), robot, filename, atts) ) {
+                return RobotBasePtr();
+            }
+        }
+        else if( _IsColladaFile(filename) ) {
             if( !RaveParseColladaFile(shared_from_this(), robot, filename, atts) ) {
                 return RobotBasePtr();
             }
@@ -1180,7 +1242,12 @@ public:
             }
         }
 
-        if( _IsColladaFile(filename) ) {
+        if( _IsColladaURI(filename) ) {
+            if( !RaveParseColladaURI(shared_from_this(), body, filename, atts) ) {
+                return KinBodyPtr();
+            }
+        }
+        else if( _IsColladaFile(filename) ) {
             if( !RaveParseColladaFile(shared_from_this(), body, filename, atts) ) {
                 return KinBodyPtr();
             }
@@ -1309,7 +1376,7 @@ public:
             return preadable->_pinterface;
         }
         catch(const std::exception &ex) {
-            RAVELOG_ERROR(str(boost::format("ReadInterfaceXMLFile exception: %s\n")%ex.what()));
+            RAVELOG_ERROR_FORMAT("ReadInterfaceXMLFile exception: %s", ex.what());
         }
         return InterfaceBasePtr();
     }
@@ -1317,42 +1384,55 @@ public:
     virtual InterfaceBasePtr ReadInterfaceURI(InterfaceBasePtr pinterface, InterfaceType type, const std::string& filename, const AttributesList& atts)
     {
         EnvironmentMutex::scoped_lock lockenv(GetMutex());
-        if( (type == PT_KinBody ||type == PT_Robot ) && _IsColladaFile(filename) ) {
-            if( type == PT_KinBody ) {
-                BOOST_ASSERT(!pinterface|| (pinterface->GetInterfaceType()==PT_KinBody||pinterface->GetInterfaceType()==PT_Robot));
-                KinBodyPtr pbody = RaveInterfaceCast<KinBody>(pinterface);
-                if( !RaveParseColladaFile(shared_from_this(), pbody, filename, atts) ) {
-                    return InterfaceBasePtr();
-                }
-                pinterface = pbody;
-            }
-            else if( type == PT_Robot ) {
-                BOOST_ASSERT(!pinterface||pinterface->GetInterfaceType()==PT_Robot);
-                RobotBasePtr probot = RaveInterfaceCast<RobotBase>(pinterface);
-                if( !RaveParseColladaFile(shared_from_this(), probot, filename, atts) ) {
-                    return InterfaceBasePtr();
-                }
-                pinterface = probot;
-            }
-            else {
-                return InterfaceBasePtr();
-            }
-            pinterface->__struri = filename;
+        bool bIsColladaURI=false, bIsColladaFile=false, bIsXFile = false;
+        if( _IsColladaURI(filename) ) {
+            bIsColladaURI = true;
         }
-        if( (type == PT_KinBody ||type == PT_Robot ) && _IsXFile(filename) ) {
+        else if( _IsColladaFile(filename) ) {
+            bIsColladaFile = true;
+        }
+        else if( _IsXFile(filename) ) {
+            bIsXFile = true;
+        }
+
+        if( (type == PT_KinBody ||type == PT_Robot ) && (bIsColladaURI||bIsColladaFile||bIsXFile) ) {
             if( type == PT_KinBody ) {
                 BOOST_ASSERT(!pinterface|| (pinterface->GetInterfaceType()==PT_KinBody||pinterface->GetInterfaceType()==PT_Robot));
                 KinBodyPtr pbody = RaveInterfaceCast<KinBody>(pinterface);
-                if( !RaveParseXFile(shared_from_this(), pbody, filename, atts) ) {
-                    return InterfaceBasePtr();
+                if( bIsColladaURI ) {
+                    if( !RaveParseColladaURI(shared_from_this(), pbody, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
+                }
+                else if( bIsColladaFile ) {
+                    if( !RaveParseColladaFile(shared_from_this(), pbody, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
+                }
+                else if( bIsXFile ) {
+                    if( !RaveParseXFile(shared_from_this(), pbody, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
                 }
                 pinterface = pbody;
             }
             else if( type == PT_Robot ) {
                 BOOST_ASSERT(!pinterface||pinterface->GetInterfaceType()==PT_Robot);
                 RobotBasePtr probot = RaveInterfaceCast<RobotBase>(pinterface);
-                if( !RaveParseXFile(shared_from_this(), probot, filename, atts) ) {
-                    return InterfaceBasePtr();
+                if( bIsColladaURI ) {
+                    if( !RaveParseColladaURI(shared_from_this(), probot, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
+                }
+                else if( bIsColladaFile ) {
+                    if( !RaveParseColladaFile(shared_from_this(), probot, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
+                }
+                else if( bIsXFile ) {
+                    if( !RaveParseXFile(shared_from_this(), probot, filename, atts) ) {
+                        return InterfaceBasePtr();
+                    }
                 }
                 pinterface = probot;
             }
@@ -1636,24 +1716,33 @@ public:
 
     virtual void StartSimulation(dReal fDeltaTime, bool bRealTime)
     {
-        EnvironmentMutex::scoped_lock lockenv(GetMutex());
-        _bEnableSimulation = true;
-        _fDeltaSimTime = fDeltaTime;
-        _bRealTime = bRealTime;
-        //_nCurSimTime = 0; // don't reset since it is important to keep time monotonic
-        _nSimStartTime = utils::GetMicroTime()-_nCurSimTime;
+        {
+            EnvironmentMutex::scoped_lock lockenv(GetMutex());
+            _bEnableSimulation = true;
+            _fDeltaSimTime = fDeltaTime;
+            _bRealTime = bRealTime;
+            //_nCurSimTime = 0; // don't reset since it is important to keep time monotonic
+            _nSimStartTime = utils::GetMicroTime()-_nCurSimTime;
+        }
+        _StartSimulationThread();
     }
 
     virtual bool IsSimulationRunning() const {
         return _bEnableSimulation;
     }
 
-    virtual void StopSimulation()
+    virtual void StopSimulation(int shutdownthread=1)
     {
-        EnvironmentMutex::scoped_lock lockenv(GetMutex());
-        _bEnableSimulation = false;
-        _fDeltaSimTime = 1.0f;
+        {
+            EnvironmentMutex::scoped_lock lockenv(GetMutex());
+            _bEnableSimulation = false;
+            _fDeltaSimTime = 1.0f;
+        }
+        if( shutdownthread ) {
+            _StopSimulationThread();
+        }
     }
+
     virtual uint64_t GetSimulationTime() {
         return _nCurSimTime;
     }
@@ -1705,14 +1794,15 @@ public:
             _vPublishedBodies.reserve(_vecbodies.size());
         }
 
-        std::vector<int> vdofbranches;
+        std::vector<dReal> vdoflastsetvalues;
         FOREACH(itbody, _vecbodies) {
             _vPublishedBodies.push_back(KinBody::BodyState());
             KinBody::BodyState& state = _vPublishedBodies.back();
             state.pbody = *itbody;
-            (*itbody)->GetLinkTransformations(state.vectrans, vdofbranches);
+            (*itbody)->GetLinkTransformations(state.vectrans, vdoflastsetvalues);
             (*itbody)->GetDOFValues(state.jointvalues);
             state.strname =(*itbody)->GetName();
+            state.updatestamp = (*itbody)->GetUpdateStamp();
             state.environmentid = (*itbody)->GetEnvironmentId();
             _vPublishedBodies.push_back(state);
         }
@@ -1797,19 +1887,25 @@ protected:
         }
 
         list<ViewerBasePtr> listViewers = _listViewers;
+        list< pair<ModuleBasePtr, std::string> > listModules = _listModules;
         {
             boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
             _listViewers.clear();
+            _listModules.clear();
         }
 
         if( !(options & Clone_Viewer) ) {
-            RAVELOG_DEBUG("resetting raveviewer\n");
+            RAVELOG_VERBOSE("resetting raveviewer\n");
             FOREACH(itviewer, listViewers) {
                 // don't reset the viewer since it can already be dead
                 // todo: this call could lead into a deadlock if a SIGINT got called from the viewer thread
                 (*itviewer)->quitmainloop();
             }
             listViewers.clear();
+        }
+
+        if( !(options & Clone_Modules) ) {
+            listModules.clear();
         }
 
         EnvironmentMutex::scoped_lock lock(GetMutex());
@@ -1892,7 +1988,7 @@ protected:
                     _mapBodies[pnewrobot->GetEnvironmentId()] = pnewrobot;
                 }
                 catch(const std::exception &ex) {
-                    RAVELOG_ERROR(str(boost::format("failed to clone robot %s: %s")%(*itrobot)->GetName()%ex.what()));
+                    RAVELOG_ERROR_FORMAT("failed to clone robot %s: %s", (*itrobot)->GetName()%ex.what());
                 }
             }
             FOREACHC(itbody, r->_vecbodies) {
@@ -1922,7 +2018,7 @@ protected:
                     _mapBodies[pnewbody->GetEnvironmentId()] = pnewbody;
                 }
                 catch(const std::exception &ex) {
-                    RAVELOG_ERROR(str(boost::format("failed to clone body %s: %s")%(*itbody)->GetName()%ex.what()));
+                    RAVELOG_ERROR_FORMAT("failed to clone body %s: %s", (*itbody)->GetName()%ex.what());
                 }
             }
 
@@ -1961,7 +2057,7 @@ protected:
                     }
                 }
                 catch(const std::exception &ex) {
-                    RAVELOG_ERROR(str(boost::format("failed to clone body %s: %s")%(*itbody)->GetName()%ex.what()));
+                    RAVELOG_ERROR_FORMAT("failed to clone body %s: %s", (*itbody)->GetName()%ex.what());
                 }
             }
             FOREACH(itbody,listToClone) {
@@ -2012,7 +2108,7 @@ protected:
                     _listSensors.push_back(pnewsensor);
                 }
                 catch(const std::exception &ex) {
-                    RAVELOG_ERROR(str(boost::format("failed to clone sensor %s: %s")%(*itsensor)->GetName()%ex.what()));
+                    RAVELOG_ERROR_FORMAT("failed to clone sensor %: %s", (*itsensor)->GetName()%ex.what());
                 }
             }
         }
@@ -2026,6 +2122,38 @@ protected:
             _nCurSimTime = r->_nCurSimTime;
             _nSimStartTime = r->_nSimStartTime;
         }
+
+        if( options & Clone_Modules ) {
+            list< pair<ModuleBasePtr, std::string> > listModules2 = r->_listModules;
+            FOREACH(itmodule2, listModules2) {
+                try {
+                    ModuleBasePtr pmodule;
+                    std::string cmdargs;
+                    if( bCheckSharedResources ) {
+                        FOREACH(itmodule,listModules) {
+                            if( itmodule->first->GetXMLId() == itmodule2->first->GetXMLId() ) {
+                                pmodule = itmodule->first;
+                                cmdargs = itmodule->second;
+                                listModules.erase(itmodule);
+                                break;
+                            }
+                        }
+                    }
+                    if( !pmodule ) {
+                        pmodule = RaveCreateModule(shared_from_this(),itmodule2->first->GetXMLId());
+                        cmdargs = itmodule2->second;
+                    }
+                    // add first before cloning!
+                    AddModule(pmodule, cmdargs);
+                    pmodule->Clone(itmodule2->first, options);
+                }
+                catch(const std::exception &ex) {
+                    RAVELOG_ERROR_FORMAT("failed to clone module %s: %s", itmodule2->first->GetXMLId()%ex.what());
+                }
+            }
+        }
+
+        listModules.clear(); // have to clear the unused modules
 
         if( options & Clone_Viewer ) {
             list<ViewerBasePtr> listViewers2;
@@ -2049,7 +2177,7 @@ protected:
                     AddViewer(pviewer);
                 }
                 catch(const std::exception &ex) {
-                    RAVELOG_ERROR(str(boost::format("failed to clone viewer %s: %s")%(*itviewer2)->GetName()%ex.what()));
+                    RAVELOG_ERROR_FORMAT("failed to clone viewer %s: %s", (*itviewer2)->GetName()%ex.what());
                 }
             }
         }
@@ -2061,10 +2189,9 @@ protected:
         listViewers.clear();
 
         if( !bCheckSharedResources ) {
-            if( !!_threadSimulation ) {
-                _threadSimulation->join();
+            if( _bEnableSimulation ) {
+                _StartSimulationThread();
             }
-            _threadSimulation.reset(new boost::thread(boost::bind(&Environment::_SimulationThread,this)));
         }
     }
 
@@ -2121,11 +2248,31 @@ protected:
         pbody->_environmentid = 0;
     }
 
+    void _StartSimulationThread()
+    {
+        if( !_threadSimulation ) {
+            _bShutdownSimulation = false;
+            _threadSimulation.reset(new boost::thread(boost::bind(&Environment::_SimulationThread, this)));
+        }
+    }
+
+    void _StopSimulationThread()
+    {
+        _bShutdownSimulation = true;
+        if( !!_threadSimulation ) {
+            _threadSimulation->join();
+            _threadSimulation.reset();
+        }
+    }
+
     void _SimulationThread()
     {
+        int environmentid = RaveGetEnvironmentId(shared_from_this());
+        
         uint64_t nLastUpdateTime = utils::GetMicroTime();
         uint64_t nLastSleptTime = utils::GetMicroTime();
-        while( _bInit ) {
+        RAVELOG_VERBOSE_FORMAT("starting simulation thread envid=%d", environmentid);
+        while( _bInit && !_bShutdownSimulation ) {
             bool bNeedSleep = true;
             boost::shared_ptr<EnvironmentMutex::scoped_try_lock> lockenv;
             if( _bEnableSimulation ) {
@@ -2200,6 +2347,22 @@ protected:
         }
     }
 
+    /// _mutexInterfaces should not be locked
+    void _CallBodyCallbacks(KinBodyPtr pbody, int action)
+    {
+        std::list<UserDataWeakPtr> listRegisteredBodyCallbacks;
+        {
+            boost::timed_mutex::scoped_lock lock(_mutexInterfaces);
+            listRegisteredBodyCallbacks = _listRegisteredBodyCallbacks;
+        }
+        FOREACH(it, listRegisteredBodyCallbacks) {
+            BodyCallbackDataPtr pdata = boost::dynamic_pointer_cast<BodyCallbackData>(it->lock());
+            if( !!pdata ) {
+                pdata->_callback(pbody, action);
+            }
+        }
+    }
+
     boost::shared_ptr<EnvironmentMutex::scoped_try_lock> _LockEnvironmentWithTimeout(uint64_t timeout)
     {
         // try to acquire the lock
@@ -2221,6 +2384,16 @@ protected:
         }
         return lockenv;
     }
+
+    static bool _IsColladaURI(const std::string& uri)
+    {
+        string scheme, authority, path, query, fragment;
+        string s1, s3, s6, s8;
+        static pcrecpp::RE re("^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\\?([^#]*))?(#(.*))?");
+        bool bmatch = re.FullMatch(uri, &s1, &scheme, &s3, &authority, &path, &s6, &query, &s8, &fragment);
+        return bmatch && scheme.size() > 0 && _IsColladaFile(path); //scheme.size() > 0;
+    }
+
     static bool _IsColladaFile(const std::string& filename)
     {
         size_t len = filename.size();
@@ -2301,7 +2474,7 @@ protected:
     std::vector<RobotBasePtr> _vecrobots;      ///< robots (possibly controlled)
     std::vector<KinBodyPtr> _vecbodies;     ///< all objects that are collidable (includes robots)
 
-    list<ModuleBasePtr> _listModules;     ///< modules loaded in the environment
+    list< std::pair<ModuleBasePtr, std::string> > _listModules;     ///< modules loaded in the environment and the strings they were intialized with. Initialization strings are used for cloning.
     list<SensorBasePtr> _listSensors;     ///< sensors loaded in the environment
     list<ViewerBasePtr> _listViewers;     ///< viewers loaded in the environment
 
@@ -2309,7 +2482,6 @@ protected:
     uint64_t _nCurSimTime;                        ///< simulation time since the start of the environment
     uint64_t _nSimStartTime;
     int _nBodiesModifiedStamp;     ///< incremented every tiem bodies vector is modified
-    bool _bRealTime;
 
     CollisionCheckerBasePtr _pCurrentChecker;
     PhysicsEngineBasePtr _pPhysicsEngine;
@@ -2331,9 +2503,12 @@ protected:
     list<InterfaceBasePtr> _listOwnedInterfaces;
 
     std::list<UserDataWeakPtr> _listRegisteredCollisionCallbacks;     ///< see EnvironmentBase::RegisterCollisionCallback
+    std::list<UserDataWeakPtr> _listRegisteredBodyCallbacks;     ///< see EnvironmentBase::RegisterBodyCallback
 
     bool _bInit;                   ///< environment is initialized
     bool _bEnableSimulation;            ///< enable simulation loop
+    bool _bShutdownSimulation; ///< if true, the simulation thread should shutdown
+    bool _bRealTime;
 
     friend class EnvironmentXMLReader;
 };
