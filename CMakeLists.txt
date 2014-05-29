@@ -78,6 +78,7 @@ include(CheckCXXSourceCompiles)
 include(CheckCXXSourceRuns)
 include(CheckCXXCompilerFlag)
 include(CheckTypeSize)
+include(InstallSymlink)
 
 find_package(PkgConfig) # pkg_check_modules
 
