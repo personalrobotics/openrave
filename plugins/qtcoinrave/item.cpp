@@ -139,7 +139,7 @@ void KinBodyItem::Load()
                 string extension;
                 if( geom->GetRenderFilename().find("__norenderif__:") == 0 ) {
                     string ignoreextension = geom->GetRenderFilename().substr(15);
-                    if( ignoreextension == "wrl" || extension == "iv" || extension == "vrml" ) {
+                    if( ignoreextension == "wrl" || extension == "iv" || extension == "vrml" || extension == "stl" ) {
                         continue;
                     }
                 }
@@ -173,6 +173,76 @@ void KinBodyItem::Load()
                             bSucceeded = true;
                         }
                     }
+                }
+
+                // Fall back on OpenRAVE's standard mesh loader.
+                if( !bSucceeded ) {
+                    typedef boost::shared_ptr<TriMesh> TriMeshPtr;
+                    TriMeshPtr mesh_ptr = _pchain->GetEnv()->ReadTrimeshURI(TriMeshPtr(), geom->GetRenderFilename());
+                    if (!mesh_ptr) {
+                        continue;
+                    }
+                    TriMesh &mesh = *mesh_ptr;
+
+                    // create custom
+                    if( psep == NULL ) {
+                        psep = new SoSeparator();
+                    }
+                    else {
+                        SoSeparator* pparentsep = new SoSeparator();
+                        pparentsep->addChild(psep);
+                        psep = pparentsep;
+                    }
+
+                    // set a diffuse color
+                    SoMaterial* mtrl = new SoMaterial;
+                    mtrl->diffuseColor = SbColor(&geom->GetDiffuseColor().x);
+                    mtrl->ambientColor = SbColor(&geom->GetAmbientColor().x);
+                    mtrl->setOverride(true);
+                    mtrl->transparency = geom->GetTransparency();
+                    psep->addChild(mtrl);
+
+                    // by default render only one side of objects
+                    // don't change since sensors like cameras are usually inside objects, but they
+                    // need to see outside of the world
+                    SoShapeHints* phints = new SoShapeHints();
+                    phints->vertexOrdering = SoShapeHints::COUNTERCLOCKWISE;
+                    phints->shapeType = SoShapeHints::SOLID;
+                    phints->faceType = SoShapeHints::CONVEX;
+                    phints->creaseAngle = 0;
+                    psep->addChild(phints);
+
+                    phints->shapeType = SoShapeHints::UNKNOWN_SHAPE_TYPE;
+
+                    SoMaterialBinding* pbinding = new SoMaterialBinding();
+                    pbinding->value = SoMaterialBinding::OVERALL;
+                    psep->addChild(pbinding);
+
+                    if( geom->GetTransparency() > 0 ) {
+                        SoTransparencyType* ptype = new SoTransparencyType();
+                        ptype->value = SoGLRenderAction::SORTED_OBJECT_SORTED_TRIANGLE_BLEND;
+                        psep->addChild(ptype);
+                    }
+
+                    SoCoordinate3* vprop = new SoCoordinate3();
+                    // this makes it crash!
+                    //vprop->point.set1Value(mesh.indices.size()-1,SbVec3f(0,0,0)); // resize
+                    int i = 0;
+                    FOREACHC(itind, mesh.indices) {
+                        RaveVector<float> v = mesh.vertices[*itind];
+                        vprop->point.set1Value(i++, SbVec3f(v.x,v.y,v.z));
+                    }
+
+                    psep->addChild(vprop);
+
+                    SoFaceSet* faceset = new SoFaceSet();
+                    // this makes it crash!
+                    //faceset->numVertices.set1Value(mesh.indices.size()/3-1,3);
+                    for(size_t i = 0; i < mesh.indices.size()/3; ++i) {
+                        faceset->numVertices.set1Value(i,3);
+                    }
+                    psep->addChild(faceset);
+                    bSucceeded = true;
                 }
             }
 

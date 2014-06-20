@@ -979,6 +979,9 @@ public:
             - \b joint_velocities - The joint velocities (1/second) of a kinbody/robot. The name of the body with the joint names can follow.
             - \b joint_accelerations - The joint accelerations (1/second^2) of a kinbody/robot. The name of the body with the joint names can follow.
             - \b joint_jerks - The joint jerks (1/second^3) of a kinbody/robot. The name of the body with the joint names can follow.
+            - \b joint_snaps - The joint snaps (1/second^4) of a kinbody/robot. The name of the body with the joint names can follow.
+            - \b joint_crackles - The joint crackles (1/second^5) of a kinbody/robot. The name of the body with the joint names can follow.
+            - \b joint_pops - The joint pops (1/second^6) of a kinbody/robot. The name of the body with the joint names can follow.
             - \b joint_torques - The joint torques (Newton meter) of a kinbody/robot. The name of the body with the joint names can follow.
             - \b affine_transform - An affine transformation [quaternion, translation]. The name of the body with selected affine dofs (see \ref DOFAffine) can follow.
             - \b affine_velocities - The velocity (1/second) of the affine transformation [rotation axis, translation velocity], the name of the body can follow.
@@ -996,10 +999,11 @@ public:
             - \b previous - the previous waypoint's value is always chosen
             - \b next - the next waypoint's value is always chosen
             - \b linear - linear interpolation (default)
-            - \b quadratic - position is piecewise-quadratic, velocity is piecewise-linear, acceleration is one of -amax, 0, or amax
-            - \b cubic - 3 degree polynomial
-            - \b quadric - 4 degree polynomial
-            - \b quintic - 5 degree polynomial
+            - \b quadratic - position is piecewise-quadratic, velocity is piecewise-linear, acceleration is one of -amax, 0, or amax. needs velocity info
+            - \b cubic - 3 degree polynomial. needs velocity info.
+            - \b quadric - 4 degree polynomial. needs velocity and acceleration info.
+            - \b quintic - 5 degree polynomial. needs velocity and acceleration info.
+            - \b sextic - 6 degree polynomial. needs velocity, acceleration, and jerk info
          */
         std::string interpolation;
     };
@@ -2727,7 +2731,7 @@ OPENRAVE_API UserDataPtr RaveRegisterInterface(InterfaceType type, const std::st
 OPENRAVE_API UserDataPtr RaveRegisterXMLReader(InterfaceType type, const std::string& xmltag, const CreateXMLReaderFn& fn);
 
 /// \brief return the environment's unique id, returns 0 if environment could not be found or not registered
-OPENRAVE_API int RaveGetEnvironmentId(EnvironmentBasePtr env);
+OPENRAVE_API int RaveGetEnvironmentId(EnvironmentBaseConstPtr env);
 
 /// \brief get the environment from its unique id
 /// \param id the unique environment id returned by \ref RaveGetEnvironmentId

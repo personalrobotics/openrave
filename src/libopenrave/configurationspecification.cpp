@@ -281,6 +281,9 @@ std::vector<ConfigurationSpecification::Group>::const_iterator ConfigurationSpec
     else if( name.size() >= 19 && name.substr(0,19) == "joint_accelerations" ) {
         derivativename = string("joint_jerks") + name.substr(19);
     }
+    else if( name.size() >= 11 && name.substr(0,11) == "joint_jerks" ) {
+        derivativename = string("joint_snaps") + name.substr(11);
+    }
     else if( name.size() >= 16 && name.substr(0,16) == "affine_transform" ) {
         derivativename = string("affine_velocities") + name.substr(16);
     }
@@ -321,6 +324,9 @@ std::vector<ConfigurationSpecification::Group>::const_iterator ConfigurationSpec
     }
     else if( name.size() >= 11 && name.substr(0,11) == "joint_jerks" ) {
         derivativename = string("joint_accelerations") + name.substr(11);
+    }
+    else if( name.size() >= 11 && name.substr(0,11) == "joint_snaps" ) {
+        derivativename = string("joint_jerks") + name.substr(11);
     }
     else if( name.size() >= 17 && name.substr(0,17) == "affine_velocities" ) {
         derivativename = string("affine_transform") + name.substr(17);
@@ -433,7 +439,7 @@ ConfigurationSpecification ConfigurationSpecification::ConvertToVelocitySpecific
 
 ConfigurationSpecification ConfigurationSpecification::ConvertToDerivativeSpecification(uint32_t timederivative) const
 {
-    OPENRAVE_ASSERT_OP(timederivative,<,4);
+    OPENRAVE_ASSERT_OP(timederivative,<,7);
     ConfigurationSpecification derivspec;
     std::string searchname;
     derivspec._vgroups = _vgroups;
@@ -445,6 +451,9 @@ ConfigurationSpecification ConfigurationSpecification::ConvertToDerivativeSpecif
                 case 1: searchname = "joint_velocities"; break;
                 case 2: searchname = "joint_accelerations"; break;
                 case 3: searchname = "joint_jerks"; break;
+                case 4: searchname = "joint_snaps"; break;
+                case 5: searchname = "joint_crackles"; break;
+                case 6: searchname = "joint_pops"; break;
                 default:
                     break;
                 }
@@ -456,6 +465,9 @@ ConfigurationSpecification ConfigurationSpecification::ConvertToDerivativeSpecif
                 case 1: searchname = "affine_velocities"; break;
                 case 2: searchname = "affine_accelerations"; break;
                 case 3: searchname = "affine_jerks"; break;
+                case 4: searchname = "affine_snaps"; break;
+                case 5: searchname = "affine_crackles"; break;
+                case 6: searchname = "affine_pops"; break;
                 default:
                     break;
                 }
@@ -467,6 +479,9 @@ ConfigurationSpecification ConfigurationSpecification::ConvertToDerivativeSpecif
                 case 1: searchname = "ikparam_velocities"; break;
                 case 2: searchname = "ikparam_accelerations"; break;
                 case 3: searchname = "ikparam_jerks"; break;
+                case 4: searchname = "ikparam_snaps"; break;
+                case 5: searchname = "ikparam_crackles"; break;
+                case 6: searchname = "ikparam_pops"; break;
                 default:
                     break;
                 }
@@ -486,6 +501,7 @@ ConfigurationSpecification ConfigurationSpecification::GetTimeDerivativeSpecific
     const boost::array<string,3> velgroups = {{"joint_velocities","affine_velocities","ikparam_velocities"}};
     const boost::array<string,3> accgroups = {{"joint_accelerations","affine_accelerations","ikparam_accelerations"}};
     const boost::array<string,3> jerkgroups = {{"joint_jerks","affine_jerks","ikparam_jerks"}};
+    const boost::array<string,3> snapgroups = {{"joint_snaps","affine_snaps","ikparam_snaps"}};
     const boost::array<string,3>* pgroup=NULL;
     if( timederivative == 0 ) {
         pgroup = &posgroups;
@@ -498,6 +514,9 @@ ConfigurationSpecification ConfigurationSpecification::GetTimeDerivativeSpecific
     }
     else if( timederivative == 3 ) {
         pgroup = &jerkgroups;
+    }
+    else if( timederivative == 4 ) {
+        pgroup = &snapgroups;
     }
     else {
         throw OPENRAVE_EXCEPTION_FORMAT0("invalid timederivative",ORE_InvalidArguments);
@@ -665,6 +684,7 @@ void ConfigurationSpecification::Swap(ConfigurationSpecification& spec)
 
 ConfigurationSpecification& ConfigurationSpecification::operator+= (const ConfigurationSpecification& r)
 {
+    const static boost::array<std::string,7> s_InterpolationOrder = {{"next","linear","quadratic","cubic","quadric","quintic","sextic"}};
     list< std::vector<Group>::const_iterator > listaddgroups;
     stringstream ss;
     vector<int> vindices;
@@ -679,7 +699,18 @@ ConfigurationSpecification& ConfigurationSpecification::operator+= (const Config
                 itcompatgroup->interpolation = itrgroup->interpolation;
             }
             else if( itrgroup->interpolation.size() > 0 && itrgroup->interpolation != itcompatgroup->interpolation ) {
-                RAVELOG_WARN(str(boost::format("interpolation values of group %s differ: %s!=%s")%itcompatgroup->name%itcompatgroup->interpolation%itrgroup->interpolation));
+                // check if itrgroup->interpolation has a higher degree and use it instead
+                for(size_t i = 0; i < s_InterpolationOrder.size(); ++i) {
+                    if( s_InterpolationOrder.at(s_InterpolationOrder.size()-i-1) == itcompatgroup->interpolation ) {
+                        break;
+                    }
+                    if( s_InterpolationOrder.at(s_InterpolationOrder.size()-i-1) == itrgroup->interpolation ) {
+                        // r has higher order, so use it instead
+                        RAVELOG_VERBOSE_FORMAT("setting interpolation of group %s from %s to %s", itcompatgroup->name%itcompatgroup->interpolation%itrgroup->interpolation);
+                        itcompatgroup->interpolation = itrgroup->interpolation;
+                    }
+                }
+                itrgroup->interpolation != itcompatgroup->interpolation;
             }
 
             if( itcompatgroup->name == itrgroup->name ) {
@@ -1644,7 +1675,7 @@ void ConfigurationSpecification::ConvertData(std::vector<dReal>::iterator ittarg
 
 std::string ConfigurationSpecification::GetInterpolationDerivative(const std::string& interpolation, int deriv)
 {
-    const static boost::array<std::string,6> s_InterpolationOrder = {{"next","linear","quadratic","cubic","quadric","quintic"}};
+    const static boost::array<std::string,7> s_InterpolationOrder = {{"next","linear","quadratic","cubic","quadric","quintic","sextic"}};
     for(int i = 0; i < (int)s_InterpolationOrder.size(); ++i) {
         if( interpolation == s_InterpolationOrder[i] ) {
             if( i < deriv ) {
