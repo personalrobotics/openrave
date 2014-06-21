@@ -139,7 +139,7 @@ void KinBodyItem::Load()
                 string extension;
                 if( geom->GetRenderFilename().find("__norenderif__:") == 0 ) {
                     string ignoreextension = geom->GetRenderFilename().substr(15);
-                    if( ignoreextension == "wrl" || extension == "iv" || extension == "vrml" || extension == "stl" ) {
+                    if( ignoreextension == "wrl" || extension == "iv" || extension == "vrml" ) {
                         continue;
                     }
                 }
@@ -147,7 +147,7 @@ void KinBodyItem::Load()
                     extension = geom->GetRenderFilename().substr(geom->GetRenderFilename().find_last_of('.')+1);
                     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
                 }
-                if( extension == "wrl" || extension == "iv" || extension == "vrml" || extension == "stl" ) {
+                if( extension == "wrl" || extension == "iv" || extension == "vrml" ) {
                     if( mySceneInput.openFile(geom->GetRenderFilename().c_str()) ) {
                         psep = SoDB::readAll(&mySceneInput);
                         if( !!psep ) {
@@ -173,12 +173,20 @@ void KinBodyItem::Load()
                             bSucceeded = true;
                         }
                     }
+                    RAVELOG_DEBUG("Trying to load '%s' using QtCoin. Succeeded? %d\n",
+                                 geom->GetRenderFilename().c_str(), bSucceeded);
+
                 }
 
                 // Fall back on OpenRAVE's standard mesh loader.
                 if( !bSucceeded ) {
+
                     typedef boost::shared_ptr<TriMesh> TriMeshPtr;
                     TriMeshPtr mesh_ptr = _pchain->GetEnv()->ReadTrimeshURI(TriMeshPtr(), geom->GetRenderFilename());
+
+                    RAVELOG_DEBUG("Trying to load '%s' using OpenRAVE. Succeeded? %d\n",
+                                 geom->GetRenderFilename().c_str(), !!mesh_ptr);
+
                     if (!mesh_ptr) {
                         continue;
                     }
@@ -247,6 +255,8 @@ void KinBodyItem::Load()
             }
 
             if( !bSucceeded ||(_viewmode == VG_RenderCollision)) {
+                RAVELOG_DEBUG("Display collision geometry.\n");
+
                 // create custom
                 if( psep == NULL ) {
                     psep = new SoSeparator();
