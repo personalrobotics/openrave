@@ -192,6 +192,14 @@ void KinBodyItem::Load()
                     }
                     TriMesh &mesh = *mesh_ptr;
 
+                    // apply render scale to the mesh
+                    Vector render_scale = geom->GetRenderScale();
+                    FOREACH(it, mesh.vertices) {
+                        it->x *= render_scale.x;
+                        it->y *= render_scale.y;
+                        it->z *= render_scale.z;
+                    }
+
                     // create custom
                     if( psep == NULL ) {
                         psep = new SoSeparator();
