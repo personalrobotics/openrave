@@ -1001,7 +1001,7 @@ public:
             - \b linear - linear interpolation (default)
             - \b quadratic - position is piecewise-quadratic, velocity is piecewise-linear, acceleration is one of -amax, 0, or amax. needs velocity info
             - \b cubic - 3 degree polynomial. needs velocity info.
-            - \b quadric - 4 degree polynomial. needs velocity and acceleration info.
+            - \b quartic - 4 degree polynomial. needs velocity and acceleration info.
             - \b quintic - 5 degree polynomial. needs velocity and acceleration info.
             - \b sextic - 6 degree polynomial. needs velocity, acceleration, and jerk info
          */
@@ -1189,23 +1189,12 @@ protected:
         Looks for 'ikparam' groups.
         \param[inout] ikparam filled with ikparameterization (if found)
         \param[in] itdata data in the format of this configuration specification
-        \param[in] robot_name optional name of robot to filter by
-        \param[in] manipulator_name optional name of manipulator to filter by
         \param[in] timederivative the time derivative of the data to extract
+        \param[in] robotname optional name of robot to filter by
+        \param[in] manipulatorname optional name of manipulator to filter by
         \return true if at least one group was found for extracting
      */
-    virtual bool ExtractIkParameterization(IkParameterization& ikparam, std::vector<dReal>::const_iterator itdata, std::string const &robot_name, std::string const &manipulator_name, int timederivative) const;
-
-
-    /** \brief extracts an ikparameterization given the start of a configuration space point
-
-        Looks for 'ikparam' groups.
-        \param[inout] ikparam filled with ikparameterization (if found)
-        \param[in] itdata data in the format of this configuration specification
-        \param[in] timederivative the time derivative of the data to extract
-        \return true if at least one group was found for extracting
-     */
-    virtual bool ExtractIkParameterization(IkParameterization& ikparam, std::vector<dReal>::const_iterator itdata, int timederivative=0) const;
+    virtual bool ExtractIkParameterization(IkParameterization& ikparam, std::vector<dReal>::const_iterator itdata, int timederivative=0, std::string const &robotname="", std::string const &manipulatorname="") const;
 
     /** \brief extracts the affine values
 
@@ -1914,10 +1903,11 @@ public:
         }
     }
 
-    static ConfigurationSpecification GetConfigurationSpecification(IkParameterizationType iktype, const std::string& interpolation="");
-    inline ConfigurationSpecification GetConfigurationSpecification(const std::string& interpolation="") const
+    static ConfigurationSpecification GetConfigurationSpecification(IkParameterizationType iktype, const std::string& interpolation="", const std::string& robotname="", const std::string& manipname="");
+
+    inline ConfigurationSpecification GetConfigurationSpecification(const std::string& interpolation="", const std::string& robotname="", const std::string& manipname="") const
     {
-        return GetConfigurationSpecification(GetType(),interpolation);
+        return GetConfigurationSpecification(GetType(), interpolation, robotname, manipname);
     }
 
     /// \brief in-place left-transform into a new coordinate system. Equivalent to t * ikparam
@@ -2858,7 +2848,7 @@ const std::string& IkParameterization::GetName() const
 
 } // end namespace OpenRAVE
 
-#if !defined(OPENRAVE_DISABLE_ASSERT_HANDLER) && defined(BOOST_ENABLE_ASSERT_HANDLER)
+#if !defined(OPENRAVE_DISABLE_ASSERT_HANDLER) && (defined(BOOST_ENABLE_ASSERT_HANDLER))
 /// Modifications controlling %boost library behavior.
 namespace boost
 {

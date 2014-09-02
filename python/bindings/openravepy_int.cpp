@@ -225,6 +225,20 @@ protected:
         _pviewer.reset();
     }
 
+    void _BodyCallback(object fncallback, KinBodyPtr pbody, int action)
+    {
+        object res;
+        PyGILState_STATE gstate = PyGILState_Ensure();
+        try {
+            fncallback(openravepy::toPyKinBody(pbody, shared_from_this()), action);
+        }
+        catch(...) {
+            RAVELOG_ERROR("exception occured in python body callback:\n");
+            PyErr_Print();
+        }
+        PyGILState_Release(gstate);
+    }
+
     CollisionAction _CollisionCallback(object fncallback, CollisionReportPtr preport, bool bFromPhysics)
     {
         object res;
@@ -236,16 +250,22 @@ protected:
             RAVELOG_ERROR("exception occured in python collision callback:\n");
             PyErr_Print();
         }
-        PyGILState_Release(gstate);
+        CollisionAction ret = CA_DefaultAction;
         if(( res == object()) || !res ) {
-            return CA_DefaultAction;
+            ret = CA_DefaultAction;
+            RAVELOG_WARN("collision callback nothing returning, so executing default action\n");
         }
-        extract<int> xi(res);
-        if( xi.check() ) {
-            return (CollisionAction)(int) xi;
+        else {
+            extract<int> xi(res);
+            if( xi.check() ) {
+                ret = (CollisionAction)(int) xi;
+            }
+            else {
+                RAVELOG_WARN("collision callback nothing returning, so executing default action\n");
+            }
         }
-        RAVELOG_WARN("collision callback nothing returning, so executing default action\n");
-        return CA_DefaultAction;
+        PyGILState_Release(gstate);
+        return ret;
     }
 
 public:
@@ -904,6 +924,18 @@ public:
     }
     object GetPhysicsEngine() {
         return object(openravepy::toPyPhysicsEngine(_penv->GetPhysicsEngine(),shared_from_this()));
+    }
+
+    object RegisterBodyCallback(object fncallback)
+    {
+        if( !fncallback ) {
+            throw openrave_exception("callback not specified");
+        }
+        UserDataPtr p = _penv->RegisterBodyCallback(boost::bind(&PyEnvironmentBase::_BodyCallback,shared_from_this(),fncallback,_1,_2));
+        if( !p ) {
+            throw openrave_exception("registration handle is NULL");
+        }
+        return openravepy::GetUserData(p);
     }
 
     object RegisterCollisionCallback(object fncallback)
@@ -1759,6 +1791,7 @@ Because race conditions can pop up when trying to lock the openrave environment 
                     .def("GetLoadedProblems",&PyEnvironmentBase::GetModules, DOXY_FN(EnvironmentBase,GetModules))
                     .def("SetPhysicsEngine",&PyEnvironmentBase::SetPhysicsEngine,args("physics"), DOXY_FN(EnvironmentBase,SetPhysicsEngine))
                     .def("GetPhysicsEngine",&PyEnvironmentBase::GetPhysicsEngine, DOXY_FN(EnvironmentBase,GetPhysicsEngine))
+                    .def("RegisterBodyCallback",&PyEnvironmentBase::RegisterBodyCallback,args("callback"), DOXY_FN(EnvironmentBase,RegisterBodyCallback))
                     .def("RegisterCollisionCallback",&PyEnvironmentBase::RegisterCollisionCallback,args("callback"), DOXY_FN(EnvironmentBase,RegisterCollisionCallback))
                     .def("HasRegisteredCollisionCallbacks",&PyEnvironmentBase::HasRegisteredCollisionCallbacks,DOXY_FN(EnvironmentBase,HasRegisteredCollisionCallbacks))
                     .def("StepSimulation",&PyEnvironmentBase::StepSimulation,args("timestep"), DOXY_FN(EnvironmentBase,StepSimulation))

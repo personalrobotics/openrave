@@ -1076,16 +1076,9 @@ ConfigurationSpecification RobotBase::Manipulator::GetArmConfigurationSpecificat
     return spec;
 }
 
-ConfigurationSpecification RobotBase::Manipulator::GetIkConfigurationSpecification(IkParameterizationType ik_type, const std::string& interpolation) const
+ConfigurationSpecification RobotBase::Manipulator::GetIkConfigurationSpecification(IkParameterizationType iktype, const std::string& interpolation) const
 {
-    std::stringstream ss;
-    ss << "ikparam_values " << ik_type << " " << GetRobot()->GetName() << " " << GetName();
-
-    int dof = IkParameterization::GetNumberOfValues(ik_type);
-
-    ConfigurationSpecification spec;
-    spec.AddGroup(ss.str(), dof, interpolation);
-    return spec;
+    return IkParameterization::GetConfigurationSpecification(iktype, GetRobot()->GetName(), GetName());
 }
 
 const std::string& RobotBase::Manipulator::GetStructureHash() const
