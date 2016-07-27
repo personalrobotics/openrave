@@ -38,7 +38,7 @@ std::istream& operator>>(std::istream& I, PlannerBase::PlannerParameters& pp)
             I.seekg((size_t)pos+ppsize);
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT("error, failed to find </PlannerParameters> in %s",buf.str(),ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT(_("error, failed to find </PlannerParameters> in %s"),buf.str(),ORE_InvalidArguments);
         }
         pp._plannerparametersdepth = 0;
         LocalXML::ParseXMLData(PlannerBase::PlannerParametersPtr(&pp,utils::null_deleter()), pbuf.c_str(), ppsize);
@@ -101,7 +101,7 @@ void PlannerBase::PlannerParameters::StateSaver::_Restore()
     BOOST_ASSERT(ret==0);
 }
 
-PlannerBase::PlannerParameters::PlannerParameters() : XMLReadable("plannerparameters"), _fStepLength(0.04f), _nMaxIterations(0), _sPostProcessingPlanner(s_linearsmoother), _nRandomGeneratorSeed(0)
+PlannerBase::PlannerParameters::PlannerParameters() : XMLReadable("plannerparameters"), _fStepLength(0.04f), _nMaxIterations(0), _nMaxPlanningTime(0), _sPostProcessingPlanner(s_linearsmoother), _nRandomGeneratorSeed(0)
 {
     _diffstatefn = SubtractStates;
     _neighstatefn = AddStates;
@@ -109,10 +109,13 @@ PlannerBase::PlannerParameters::PlannerParameters() : XMLReadable("plannerparame
     _checkpathconstraintsfn = boost::bind(&PlannerParameters::_CheckPathConstraintsOld, this, _1, _2, _3, _4);
 
     //_sPostProcessingParameters ="<_nmaxiterations>100</_nmaxiterations><_postprocessing planner=\"lineartrajectoryretimer\"></_postprocessing>";
-    _sPostProcessingParameters ="<_nmaxiterations>20</_nmaxiterations><_postprocessing planner=\"parabolicsmoother\"><_nmaxiterations>100</_nmaxiterations></_postprocessing>";
+    // should not verify initial path since coming from RRT. actually the linear smoother sometimes introduces small collisions due to the discrete nature of the collision checking, so also want to ignore those
+    _sPostProcessingParameters ="<_nmaxiterations>20</_nmaxiterations><_postprocessing planner=\"parabolicsmoother\"><_nmaxiterations>100</_nmaxiterations><verifyinitialpath>0</verifyinitialpath></_postprocessing>";
     _vXMLParameters.reserve(20);
     _vXMLParameters.push_back("configuration");
     _vXMLParameters.push_back("_vinitialconfig");
+    _vXMLParameters.push_back("_vinitialconfigvelocities");
+    _vXMLParameters.push_back("_vgoalconfigvelocities");
     _vXMLParameters.push_back("_vgoalconfig");
     _vXMLParameters.push_back("_vconfiglowerlimit");
     _vXMLParameters.push_back("_vconfigupperlimit");
@@ -120,6 +123,7 @@ PlannerBase::PlannerParameters::PlannerParameters() : XMLReadable("plannerparame
     _vXMLParameters.push_back("_vconfigaccelerationlimit");
     _vXMLParameters.push_back("_vconfigresolution");
     _vXMLParameters.push_back("_nmaxiterations");
+    _vXMLParameters.push_back("_nmaxplanningtime");
     _vXMLParameters.push_back("_fsteplength");
     _vXMLParameters.push_back("_postprocessing");
     _vXMLParameters.push_back("_nrandomgeneratorseed");
@@ -154,6 +158,8 @@ PlannerBase::PlannerParameters& PlannerBase::PlannerParameters::operator=(const 
     _listInternalSamplers = r._listInternalSamplers;
 
     vinitialconfig.resize(0);
+    _vInitialConfigVelocities.resize(0);
+    _vGoalConfigVelocities.resize(0);
     vgoalconfig.resize(0);
     _configurationspecification = ConfigurationSpecification();
     _vConfigLowerLimit.resize(0);
@@ -165,6 +171,7 @@ PlannerBase::PlannerParameters& PlannerBase::PlannerParameters::operator=(const 
     _sPostProcessingParameters.resize(0);
     _sExtraParameters.resize(0);
     _nMaxIterations = 0;
+    _nMaxPlanningTime = 0;
     _fStepLength = 0.04f;
     _nRandomGeneratorSeed = 0;
     _plannerparametersdepth = 0;
@@ -192,7 +199,7 @@ int PlannerBase::PlannerParameters::SetStateValues(const std::vector<dReal>& val
         _setstatefn(values);
         return 0;
     }
-    throw openrave_exception("need to set PlannerParameters::_setstatevaluesfn");
+    throw openrave_exception(_("need to set PlannerParameters::_setstatevaluesfn"));
 }
 
 bool PlannerBase::PlannerParameters::serialize(std::ostream& O, int options) const
@@ -203,11 +210,21 @@ bool PlannerBase::PlannerParameters::serialize(std::ostream& O, int options) con
         O << *it << " ";
     }
     O << "</_vinitialconfig>" << endl;
+    O << "<_vinitialconfigvelocities>";
+    FOREACHC(it, _vInitialConfigVelocities) {
+        O << *it << " ";
+    }
+    O << "</_vinitialconfigvelocities>" << endl;
     O << "<_vgoalconfig>";
     FOREACHC(it, vgoalconfig) {
         O << *it << " ";
     }
     O << "</_vgoalconfig>" << endl;
+    O << "<_vgoalconfigvelocities>";
+    FOREACHC(it, _vGoalConfigVelocities) {
+        O << *it << " ";
+    }
+    O << "</_vgoalconfigvelocities>" << endl;
     O << "<_vconfiglowerlimit>";
     FOREACHC(it, _vConfigLowerLimit) {
         O << *it << " ";
@@ -235,6 +252,7 @@ bool PlannerBase::PlannerParameters::serialize(std::ostream& O, int options) con
     O << "</_vconfigresolution>" << endl;
 
     O << "<_nmaxiterations>" << _nMaxIterations << "</_nmaxiterations>" << endl;
+    O << "<_nmaxplanningtime>" << _nMaxPlanningTime << "</_nmaxplanningtime>" << endl;
     O << "<_fsteplength>" << _fStepLength << "</_fsteplength>" << endl;
     O << "<_nrandomgeneratorseed>" << _nRandomGeneratorSeed << "</_nrandomgeneratorseed>" << endl;
     O << "<_postprocessing planner=\"" << _sPostProcessingPlanner << "\">" << _sPostProcessingParameters << "</_postprocessing>" << endl;
@@ -291,7 +309,7 @@ BaseXMLReader::ProcessElement PlannerBase::PlannerParameters::startElement(const
         return PE_Support;
     }
 
-    static const boost::array<std::string,11> names = {{"_vinitialconfig","_vgoalconfig","_vconfiglowerlimit","_vconfigupperlimit","_vconfigvelocitylimit","_vconfigaccelerationlimit","_vconfigresolution","_nmaxiterations","_fsteplength","_postprocessing", "_nrandomgeneratorseed"}};
+    static const boost::array<std::string,14> names = {{"_vinitialconfig","_vgoalconfig","_vconfiglowerlimit","_vconfigupperlimit","_vconfigvelocitylimit","_vconfigaccelerationlimit","_vconfigresolution","_nmaxiterations","_nmaxplanningtime","_fsteplength","_postprocessing", "_nrandomgeneratorseed", "_vinitialconfigvelocities", "_vgoalconfigvelocities"}};
     if( find(names.begin(),names.end(),name) != names.end() ) {
         __processingtag = name;
         return PE_Support;
@@ -325,8 +343,14 @@ bool PlannerBase::PlannerParameters::endElement(const std::string& name)
         if( name == "_vinitialconfig") {
             vinitialconfig = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
         }
+        else if( name == "_vinitialconfigvelocities") {
+            _vInitialConfigVelocities = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
+        }
         else if( name == "_vgoalconfig") {
             vgoalconfig = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
+        }
+        else if( name == "_vgoalconfigvelocities") {
+            _vGoalConfigVelocities = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
         }
         else if( name == "_vconfiglowerlimit") {
             _vConfigLowerLimit = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
@@ -345,6 +369,9 @@ bool PlannerBase::PlannerParameters::endElement(const std::string& name)
         }
         else if( name == "_nmaxiterations") {
             _ss >> _nMaxIterations;
+        }
+        else if( name == "_nmaxplanningtime") {
+            _ss >> _nMaxPlanningTime;
         }
         else if( name == "_fsteplength") {
             _ss >> _fStepLength;
@@ -431,6 +458,7 @@ void PlannerBase::PlannerParameters::SetRobotActiveJoints(RobotBasePtr robot)
     robot->GetActiveDOFAccelerationLimits(_vConfigAccelerationLimit);
     robot->GetActiveDOFResolutions(_vConfigResolution);
     robot->GetActiveDOFValues(vinitialconfig);
+    robot->GetActiveDOFVelocities(_vInitialConfigVelocities); // necessary?
     _configurationspecification = robot->GetActiveConfigurationSpecification();
 
     _neighstatefn = boost::bind(AddStatesWithLimitCheck, _1, _2, _3, boost::ref(_vConfigLowerLimit), boost::ref(_vConfigUpperLimit)); // probably ok... do we need to clamp limits?
@@ -681,7 +709,7 @@ void PlannerBase::PlannerParameters::SetConfigurationSpecification(EnvironmentBa
                     ss << *itindex << " ";
                 }
                 if( !pconfigsampler->SendCommand(ssout,ss) ) {
-                    throw OPENRAVE_EXCEPTION_FORMAT("failed to set body %s configuration to %s",pbody->GetName()%ss.str(), ORE_Assert);
+                    throw OPENRAVE_EXCEPTION_FORMAT(_("failed to set body %s configuration to %s"),pbody->GetName()%ss.str(), ORE_Assert);
                 }
             }
             boost::shared_ptr<SimpleNeighborhoodSampler> defaultsamplefn(new SimpleNeighborhoodSampler(pconfigsampler,distmetricfns[isavegroup].first, diffstatefns[isavegroup].first));
@@ -717,7 +745,7 @@ void PlannerBase::PlannerParameters::SetConfigurationSpecification(EnvironmentBa
 //        else if( g.name.size() >= 4 && g.name.substr(0,4) == "grab" ) {
 //        }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT("group %s not supported for for planner parameters configuration",g.name,ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT(_("group %s not supported for for planner parameters configuration"),g.name,ORE_InvalidArguments);
         }
     }
     _diffstatefn = boost::bind(_CallDiffStateFns,diffstatefns, spec.GetDOF(), nMaxDOFForGroup, _1, _2);
@@ -743,6 +771,8 @@ void PlannerBase::PlannerParameters::Validate() const
 {
     OPENRAVE_ASSERT_OP(_configurationspecification.GetDOF(),==,GetDOF());
     OPENRAVE_ASSERT_OP(vinitialconfig.size()%GetDOF(),==,0);
+    OPENRAVE_ASSERT_OP(_vInitialConfigVelocities.size()%GetDOF(),==,0);
+    OPENRAVE_ASSERT_OP(_vGoalConfigVelocities.size()%GetDOF(),==,0);
     OPENRAVE_ASSERT_OP(vgoalconfig.size()%GetDOF(),==,0);
     OPENRAVE_ASSERT_OP(_vConfigLowerLimit.size(),==,(size_t)GetDOF());
     OPENRAVE_ASSERT_OP(_vConfigUpperLimit.size(),==,(size_t)GetDOF());
@@ -782,8 +812,22 @@ void PlannerBase::PlannerParameters::Validate() const
     if( !!_neighstatefn && vstate.size() > 0 ) {
         vector<dReal> vstate2 = vstate;
         vector<dReal> vzeros(vstate.size());
-        _neighstatefn(vstate2,vzeros,0);
+        _neighstatefn(vstate2,vzeros,NSO_OnlyHardConstraints);
         dReal dist = _distmetricfn(vstate,vstate2);
+        if( IS_DEBUGLEVEL(Level_Debug) ) {
+            if( dist > 1000*g_fEpsilon ) {
+                std::stringstream ss; ss << "vstate=";
+                for(size_t i = 0; i < vstate.size(); ++i) {
+                    ss << vstate[i] << ", ";
+                }
+                ss << "; vstate2=";
+                for(size_t i = 0; i < vstate2.size(); ++i) {
+                    ss << vstate2[i] << ", ";
+                }
+                RAVELOG_DEBUG_FORMAT("unequal states: %s",ss.str());
+            }
+        }
+        
         OPENRAVE_ASSERT_OP(dist,<=,1000*g_fEpsilon);
     }
     if( !!_diffstatefn && vstate.size() > 0 ) {
@@ -867,6 +911,7 @@ PlannerStatus PlannerBase::_ProcessPostPlanners(RobotBasePtr probot, TrajectoryB
     params->_sPostProcessingPlanner = "";
     params->_sPostProcessingParameters = "";
     params->_nMaxIterations = 0; // have to reset since path optimizers also use it and new parameters could be in extra parameters
+    //params->_nMaxPlanningTime = 0; // have to reset since path optimizers also use it and new parameters could be in extra parameters??
     if( __cachePostProcessPlanner->InitPlan(probot, params) ) {
         return __cachePostProcessPlanner->PlanPath(ptraj);
     }

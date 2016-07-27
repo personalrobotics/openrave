@@ -177,7 +177,7 @@ void KinBodyItem::Load()
 
                 // Fall back on OpenRAVE's standard mesh loader.
                 if( !bSucceeded ) {
-
+                    // need to very careful
                     typedef boost::shared_ptr<TriMesh> TriMeshPtr;
                     TriMeshPtr mesh = _pchain->GetEnv()->ReadTrimeshURI(TriMeshPtr(), geom->GetRenderFilename());
                     if (mesh) {
@@ -260,9 +260,10 @@ void KinBodyItem::Load()
                     psep->addChild(cy);
                     break;
                 }
+                case GT_Container:
                 case GT_TriMesh: {
-                    // set to render for both faces
-                    phints->shapeType = SoShapeHints::UNKNOWN_SHAPE_TYPE;
+                    // actually don't set to dual-sided rendering since flipped triangles can cause problems with collision and user should know about it
+                    //phints->shapeType = SoShapeHints::UNKNOWN_SHAPE_TYPE; // set to render for both faces
 
                     SoMaterialBinding* pbinding = new SoMaterialBinding();
                     pbinding->value = SoMaterialBinding::OVERALL;
@@ -472,10 +473,11 @@ bool KinBodyItem::UpdateFromModel(const vector<dReal>& vjointvalues, const vecto
     _vjointvalues = vjointvalues;
     _vtrans = vtrans;
 
-    if((_vtrans.size() == 0)||(_veclinks.size() != _vtrans.size())) {
+    if( _vtrans.size() == 0 || _veclinks.size() != _vtrans.size() ) {
         // something's wrong, so just return
         return false;
     }
+    
     Transform tglob = _vtrans.at(0); //_pchain->GetCenterOfMass();
     SbMatrix m; m.makeIdentity();
     _ivXform->setMatrix(m);
@@ -733,9 +735,9 @@ bool RobotItem::UpdateFromIv()
 
 bool RobotItem::UpdateFromModel(const vector<dReal>& vjointvalues, const vector<Transform>& vtrans)
 {
-    if( !KinBodyItem::UpdateFromModel(vjointvalues,vtrans) )
+    if( !KinBodyItem::UpdateFromModel(vjointvalues,vtrans) ) {
         return false;
-
+    }
     if( bGrabbed ) {
         // only updated when grabbing!
         RaveTransform<float> transInvRoot = GetRaveTransform(_ivXform).inverse();

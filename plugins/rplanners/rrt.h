@@ -36,6 +36,7 @@ Uses the Rapidly-Exploring Random Trees Algorithm.\n\
                         "returns the goal index of the plan");
         RegisterCommand("GetInitGoalIndices",boost::bind(&RrtPlanner<Node>::GetInitGoalIndicesCommand,this,_1,_2),
                         "returns the start and goal indices");
+        _filterreturn.reset(new ConstraintFilterReturn());
     }
     virtual ~RrtPlanner() {
     }
@@ -70,7 +71,9 @@ Uses the Rapidly-Exploring Random Trees Algorithm.\n\
         std::vector<dReal> vinitialconfig(params->GetDOF());
         for(size_t index = 0; index < params->vinitialconfig.size(); index += params->GetDOF()) {
             std::copy(params->vinitialconfig.begin()+index,params->vinitialconfig.begin()+index+params->GetDOF(),vinitialconfig.begin());
-            if( params->CheckPathAllConstraints(vinitialconfig,vinitialconfig, std::vector<dReal>(), std::vector<dReal>(), 0, IT_OpenStart) != 0 ) {
+            _filterreturn->Clear();
+            if( params->CheckPathAllConstraints(vinitialconfig,vinitialconfig, std::vector<dReal>(), std::vector<dReal>(), 0, IT_OpenStart, CFO_FillCollisionReport, _filterreturn) != 0 ) {
+                RAVELOG_DEBUG_FORMAT("initial configuration for rrt does not satisfy constraints: %s", _filterreturn->_report.__str__());
                 continue;
             }
             _vecInitialNodes.push_back(_treeForward.InsertNode(NULL, vinitialconfig, _vecInitialNodes.size()));
@@ -324,6 +327,9 @@ Some python code to display data::\n\
             }
             else {
                 RAVELOG_WARN(str(boost::format("goal %d fails constraints\n")%igoal));
+                if( IS_DEBUGLEVEL(Level_Verbose) ) {
+                    int ret = _parameters->CheckPathAllConstraints(vgoal,vgoal,std::vector<dReal>(), std::vector<dReal>(), 0, IT_OpenStart);
+                }
                 _vecGoalNodes.push_back(NULL); // have to push back dummy or else indices will be messed up
             }
         }
@@ -448,7 +454,7 @@ Some python code to display data::\n\
                 int startindex = _vgoalpaths.back().startindex;
                 if( IS_DEBUGLEVEL(Level_Debug) ) {
                     stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
-                    ss << "found a goal, start index=" << startindex << " goal index=" << goalindex << ", path length=" << _vgoalpaths.back().length << ", values=[";
+                    ss << "env=" << GetEnv()->GetId() << ", found a goal, start index=" << startindex << " goal index=" << goalindex << ", path length=" << _vgoalpaths.back().length << ", values=[";
                     for(int i = 0; i < _parameters->GetDOF(); ++i) {
                         ss << _vgoalpaths.back().qall.at(_vgoalpaths.back().qall.size()-_parameters->GetDOF()+i) << ", ";
                     }
@@ -499,7 +505,7 @@ Some python code to display data::\n\
             ptraj->Init(_parameters->_configurationspecification);
         }
         ptraj->Insert(ptraj->GetNumWaypoints(), itbest->qall, _parameters->_configurationspecification);
-        RAVELOG_DEBUG_FORMAT("plan success, iters=%d, path=%d points, computation time=%fs\n", progress._iteration%ptraj->GetNumWaypoints()%(0.001f*(float)(utils::GetMilliTime()-basetime)));
+        RAVELOG_DEBUG_FORMAT("env=%d, plan success, iters=%d, path=%d points, computation time=%fs\n", GetEnv()->GetId()%progress._iteration%ptraj->GetNumWaypoints()%(0.001f*(float)(utils::GetMilliTime()-basetime)));
         return _ProcessPostPlanners(_robot,ptraj);
     }
 
@@ -638,6 +644,8 @@ public:
         __description = "Rosen's Basic RRT planner";
         _fGoalBiasProb = dReal(0.05);
         _bOneStep = false;
+        RegisterCommand("DumpTree", boost::bind(&BasicRrtPlanner::_DumpTreeCommand,this,_1,_2),
+                        "dumps the source and goal trees to $OPENRAVE_HOME/basicrrtdump.txt. The first N values are the DOF values, the last value is the parent index.\n");
     }
     virtual ~BasicRrtPlanner() {
     }
@@ -688,7 +696,8 @@ public:
             return false;
         }
 
-        RAVELOG_DEBUG("RrtPlanner::InitPlan - RRT Planner Initialized\n");
+        _bOneStep = _parameters->_nRRTExtentType == 1;
+        RAVELOG_DEBUG_FORMAT("BasicRrtPlanner initialized _nRRTExtentType=%d", _parameters->_nRRTExtentType);
         return true;
     }
 
@@ -702,22 +711,28 @@ public:
         EnvironmentMutex::scoped_lock lock(GetEnv()->GetMutex());
         uint32_t basetime = utils::GetMilliTime();
 
-        NodeBase* lastnode = NULL;
-        bool bSuccess = false;
+        NodeBasePtr lastnode; // the last node visited by the RRT
+        NodeBase* bestGoalNode = NULL; // the best goal node found already by the RRT. If this is not NULL, then RRT succeeded
+        dReal fBestGoalNodeDist = 0; // configuration distance from initial position to the goal node
 
         // the main planning loop
         PlannerParameters::StateSaver savestate(_parameters);
         CollisionOptionsStateSaver optionstate(GetEnv()->GetCollisionChecker(),GetEnv()->GetCollisionChecker()->GetCollisionOptions()|CO_ActiveDOFs,false);
 
+        std::vector<dReal> vtempinitialconfig;
         PlannerAction callbackaction = PA_None;
         PlannerProgress progress;
         int iter = 0;
-        _goalindex = -1;
+        _goalindex = -1; // index into vgoalconfig if the goal is found
         _startindex = -1;
 
-        while(!bSuccess && iter < _parameters->_nMaxIterations) {
+        int numfoundgoals = 0;
+        
+        while(iter < _parameters->_nMaxIterations) {
             iter++;
-
+            if( !!bestGoalNode && iter >= _parameters->_nMinIterations ) {
+                break;
+            }
             if( !!_parameters->_samplegoalfn ) {
                 vector<dReal> vgoal;
                 if( _parameters->_samplegoalfn(vgoal) ) {
@@ -746,21 +761,65 @@ public:
             if( et == ET_Connected ) {
                 FOREACH(itgoal, _vecGoals) {
                     if( _parameters->_distmetricfn(*itgoal, _treeForward.GetVectorConfig(lastnode)) < 2*_parameters->_fStepLength ) {
-                        bSuccess = true;
-                        _goalindex = (int)(itgoal-_vecGoals.begin());
-                        RAVELOG_DEBUG(str(boost::format("found goal index: %d\n")%_goalindex));
-                        break;
+                        SimpleNode* pforward = (SimpleNode*)lastnode;
+                        while(1) {
+                            if(!pforward->rrtparent) {
+                                break;
+                            }
+                            pforward = pforward->rrtparent;
+                        }
+                        vtempinitialconfig = _treeForward.GetVectorConfig(pforward); // GetVectorConfig returns the same reference, so need to make a copy
+                        dReal fGoalNodeDist = _parameters->_distmetricfn(vtempinitialconfig, _treeForward.GetVectorConfig(lastnode));
+                        if( !bestGoalNode || fBestGoalNodeDist > fGoalNodeDist ) {
+                            bestGoalNode = lastnode;
+                            fBestGoalNodeDist = fGoalNodeDist;
+                            _goalindex = (int)(itgoal-_vecGoals.begin());
+                        }
+                        if( iter >= _parameters->_nMinIterations ) {
+                            RAVELOG_DEBUG_FORMAT("env=%d, found goal index: %d", GetEnv()->GetId()%_goalindex);
+                            break;
+                        }
                     }
                 }
             }
 
             // check the goal heuristic more often
             if(( et != ET_Failed) && !!_parameters->_goalfn ) {
-                if( _parameters->_goalfn(_treeForward.GetVectorConfig(lastnode)) <= 1e-4f ) {
-                    bSuccess = true;
-                    _goalindex = -1;
-                    RAVELOG_DEBUG("node at goal\n");
-                    break;
+                // have to check all the newly created nodes since anyone could be already in the goal (do not have to do this with _vecGoals since that is being sampled)
+                bool bfound = false;
+                SimpleNode* ptestnode = (SimpleNode*)lastnode;
+                while(!!ptestnode && ptestnode->_userdata==0) { // when userdata is 0, then it hasn't been checked for goal yet
+                    if( _parameters->_goalfn(_treeForward.GetVectorConfig(ptestnode)) <= 1e-4f ) {
+                        bfound = true;
+                        numfoundgoals++;
+                        ptestnode->_userdata = 1;
+                        SimpleNode* pforward = ptestnode;
+                        while(1) {
+                            if(!pforward->rrtparent) {
+                                break;
+                            }
+                            pforward = pforward->rrtparent;
+                        }
+                        vtempinitialconfig = _treeForward.GetVectorConfig(pforward); // GetVectorConfig returns the same reference, so need to make a copy
+                        dReal fGoalNodeDist = _parameters->_distmetricfn(vtempinitialconfig, _treeForward.GetVectorConfig(ptestnode));
+                        if( !bestGoalNode || fBestGoalNodeDist > fGoalNodeDist ) {
+                            bestGoalNode = ptestnode;
+                            fBestGoalNodeDist = fGoalNodeDist;
+                            _goalindex = -1;
+                            RAVELOG_DEBUG_FORMAT("env=%d, found node at goal at dist=%f at %d iterations, computation time=%fs", GetEnv()->GetId()%fBestGoalNodeDist%iter%(0.001f*(float)(utils::GetMilliTime()-basetime)));
+                        }
+                    }
+
+                    ptestnode->_userdata = 1;
+                    ptestnode = ptestnode->rrtparent;
+                }
+                if( bfound ) {
+                    if( iter >= _parameters->_nMinIterations ) {
+                        // check how many times we've got a goal?
+                        if( numfoundgoals >= _parameters->_minimumgoalpaths ) {
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -770,20 +829,28 @@ public:
                 break;
             }
 
+            if( !!bestGoalNode && _parameters->_nMaxPlanningTime > 0 ) {
+                uint32_t elapsedtime = utils::GetMilliTime()-basetime;
+                if( elapsedtime >= _parameters->_nMaxPlanningTime ) {
+                    RAVELOG_VERBOSE_FORMAT("time exceeded (%d) so breaking with bestdist=%f", elapsedtime%fBestGoalNodeDist);
+                    break;
+                }
+            }
+
             progress._iteration = iter;
             callbackaction = _CallCallbacks(progress);
             if( callbackaction ==  PA_Interrupt ) {
                 return PS_Interrupted;
             }
             else if( callbackaction == PA_ReturnWithAnySolution ) {
-                if( bSuccess ) {
+                if( !!bestGoalNode ) {
                     break;
                 }
             }
         }
 
-        if( !bSuccess ) {
-            RAVELOG_DEBUG("plan failed, %fs\n",0.001f*(float)(utils::GetMilliTime()-basetime));
+        if( !bestGoalNode ) {
+            RAVELOG_DEBUG_FORMAT("plan failed, %fs",(0.001f*(float)(utils::GetMilliTime()-basetime)));
             return PS_Failed;
         }
 
@@ -791,7 +858,7 @@ public:
         _cachedpath.resize(0);
 
         // add nodes from the forward tree
-        SimpleNode* pforward = (SimpleNode*)lastnode;
+        SimpleNode* pforward = (SimpleNode*)bestGoalNode;
         while(1) {
             _cachedpath.insert(_cachedpath.begin(), pforward->q, pforward->q+dof);
             if(!pforward->rrtparent) {
@@ -808,7 +875,7 @@ public:
         ptraj->Insert(ptraj->GetNumWaypoints(), vinsertvalues, _parameters->_configurationspecification);
 
         PlannerStatus status = _ProcessPostPlanners(_robot,ptraj);
-        RAVELOG_DEBUG(str(boost::format("plan success, path=%d points in %fs\n")%ptraj->GetNumWaypoints()%((0.001f*(float)(utils::GetMilliTime()-basetime)))));
+        RAVELOG_DEBUG_FORMAT("env=%d, plan success, path=%d points computation time=%fs, maxPlanningTime=%f", GetEnv()->GetId()%ptraj->GetNumWaypoints()%((0.001f*(float)(utils::GetMilliTime()-basetime)))%(0.001*_parameters->_nMaxPlanningTime));
         return status;
     }
 
@@ -816,6 +883,16 @@ public:
         return _parameters;
     }
 
+    virtual bool _DumpTreeCommand(std::ostream& os, std::istream& is) {
+        std::string filename = RaveGetHomeDirectory() + string("/basicrrtdump.txt");
+        getline(is, filename);
+        boost::trim(filename);
+        RAVELOG_VERBOSE(str(boost::format("dumping rrt tree to %s")%filename));
+        ofstream f(filename.c_str());
+        f << std::setprecision(std::numeric_limits<dReal>::digits10+1);
+        _treeForward.DumpTree(f);
+        return true;
+    }
 protected:
     boost::shared_ptr<BasicRRTParameters> _parameters;
     dReal _fGoalBiasProb;
@@ -827,67 +904,6 @@ protected:
 class ExplorationPlanner : public RrtPlanner<SimpleNode>
 {
 public:
-    class ExplorationParameters : public PlannerBase::PlannerParameters {
-public:
-        ExplorationParameters() : _fExploreProb(0), _nExpectedDataSize(100), _bProcessingExploration(false) {
-            _vXMLParameters.push_back("exploreprob");
-            _vXMLParameters.push_back("expectedsize");
-        }
-
-        dReal _fExploreProb;
-        int _nExpectedDataSize;
-
-protected:
-        bool _bProcessingExploration;
-        // save the extra data to XML
-        virtual bool serialize(std::ostream& O) const
-        {
-            if( !PlannerParameters::serialize(O) ) {
-                return false;
-            }
-            O << "<exploreprob>" << _fExploreProb << "</exploreprob>" << endl;
-            O << "<expectedsize>" << _nExpectedDataSize << "</expectedsize>" << endl;
-            return !!O;
-        }
-
-        ProcessElement startElement(const std::string& name, const AttributesList &atts)
-        {
-            if( _bProcessingExploration ) {
-                return PE_Ignore;
-            }
-            switch( PlannerBase::PlannerParameters::startElement(name,atts) ) {
-            case PE_Pass: break;
-            case PE_Support: return PE_Support;
-            case PE_Ignore: return PE_Ignore;
-            }
-
-            _bProcessingExploration = name=="exploreprob"||name=="expectedsize";
-            return _bProcessingExploration ? PE_Support : PE_Pass;
-        }
-
-        // called at the end of every XML tag, _ss contains the data
-        virtual bool endElement(const std::string& name)
-        {
-            // _ss is an internal stringstream that holds the data of the tag
-            if( _bProcessingExploration ) {
-                if( name == "exploreprob") {
-                    _ss >> _fExploreProb;
-                }
-                else if( name == "expectedsize" ) {
-                    _ss >> _nExpectedDataSize;
-                }
-                else {
-                    RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));
-                }
-                _bProcessingExploration = false;
-                return false;
-            }
-
-            // give a chance for the default parameters to get processed
-            return PlannerParameters::endElement(name);
-        }
-    };
-
     ExplorationPlanner(EnvironmentBasePtr penv) : RrtPlanner<SimpleNode>(penv) {
         __description = ":Interface Author: Rosen Diankov\n\nRRT-based exploration planner";
     }
@@ -930,7 +946,7 @@ protected:
                 NodeBase* pnode = _treeForward.GetNodeFromIndex(inode);
 
                 if( !_parameters->_sampleneighfn(vSampleConfig, _treeForward.GetVectorConfig(pnode), _parameters->_fStepLength) ) {
-                    return PS_Failed;
+                    continue;
                 }
                 if( GetParameters()->CheckPathAllConstraints(_treeForward.GetVectorConfig(pnode), vSampleConfig, std::vector<dReal>(), std::vector<dReal>(), 0, IT_OpenStart) == 0 ) {
                     _treeForward.InsertNode(pnode, vSampleConfig, 0);
@@ -942,7 +958,7 @@ protected:
                 if( !_parameters->_samplefn(vSampleConfig) ) {
                     continue;
                 }
-                NodeBase* plastnode;
+                NodeBasePtr plastnode;
                 if( _treeForward.Extend(vSampleConfig, plastnode, true) == ET_Connected ) {
                     RAVELOG_DEBUG_FORMAT("size %d", _treeForward.GetNumNodes());
                 }

@@ -211,10 +211,13 @@ public:
     void Sample(std::vector<dReal>& data, dReal time, const ConfigurationSpecification& spec) const
     {
         BOOST_ASSERT(_bInit);
-        BOOST_ASSERT(_timeoffset>=0);
-        BOOST_ASSERT(time >= -g_fEpsilon);
+        OPENRAVE_ASSERT_OP(_timeoffset,>=,0);
+        OPENRAVE_ASSERT_OP(time, >=, -g_fEpsilon);
         _ComputeInternal();
-        _VerifySampling();
+        OPENRAVE_ASSERT_OP_FORMAT0((int)_vtrajdata.size(),>=,_spec.GetDOF(), "trajectory needs at least one point to sample from", ORE_InvalidArguments);
+        if( IS_DEBUGLEVEL(Level_Verbose) || (RaveGetDebugLevel() & Level_VerifyPlans) ) {
+            _VerifySampling();
+        }
         data.resize(0);
         data.resize(spec.GetDOF(),0);
         if( time >= GetDuration() ) {
@@ -393,7 +396,9 @@ protected:
             _vdeltainvtime.at(0) = 1/_vtrajdata.at(_timeoffset);
             for(size_t i = 1; i < _vaccumtime.size(); ++i) {
                 dReal deltatime = _vtrajdata[_spec.GetDOF()*i+_timeoffset];
-                BOOST_ASSERT(deltatime>=0);
+                if( deltatime < 0 ) {
+                    throw OPENRAVE_EXCEPTION_FORMAT("deltatime (%.15e) is < 0 at point %d/%d", deltatime%i%_vaccumtime.size(), ORE_InvalidState);
+                }
                 _vdeltainvtime[i] = 1/deltatime;
                 _vaccumtime[i] = _vaccumtime[i-1] + deltatime;
             }
@@ -405,7 +410,8 @@ protected:
     /// \brief assumes _ComputeInternal has finished
     void _VerifySampling() const
     {
-        BOOST_ASSERT(!_bChanged && _bInit);
+        BOOST_ASSERT(!_bChanged);
+        BOOST_ASSERT(_bInit);
         if( _bSamplingVerified ) {
             return;
         }
@@ -422,7 +428,7 @@ protected:
             const string& name = _spec._vgroups[i].name;
             for(int j = 0; j < _spec._vgroups[i].dof; ++j) {
                 if( _vderivoffsets.at(_spec._vgroups[i].offset+j) < -2 && _vintegraloffsets.at(_spec._vgroups[i].offset+j) < -2 ) {
-                    throw OPENRAVE_EXCEPTION_FORMAT("%s interpolation group '%s' needs derivatives/integrals for sampling",interpolation%name,ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT(_("%s interpolation group '%s' needs derivatives/integrals for sampling"),interpolation%name,ORE_InvalidArguments);
                 }
             }
         }
@@ -773,7 +779,7 @@ protected:
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation does not have all data",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("cubic interpolation does not have all data"),ORE_InvalidArguments);
             }
         }
         else {
@@ -814,7 +820,7 @@ protected:
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation does not have all data",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("cubic interpolation does not have all data"),ORE_InvalidArguments);
             }
         }
         else {
@@ -865,7 +871,7 @@ protected:
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation does not have all data",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("cubic interpolation does not have all data"),ORE_InvalidArguments);
             }
         }
         else {
@@ -935,7 +941,7 @@ protected:
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("cubic interpolation does not have all data",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("cubic interpolation does not have all data"),ORE_InvalidArguments);
             }
         }
         else {

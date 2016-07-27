@@ -71,14 +71,14 @@ public:
     {
         vector<dReal> values = ExtractArray<dReal>(o);
         if( values.size() == 0 ) {
-            throw openrave_exception("no values specified");
+            throw openrave_exception(_("no values specified"));
         }
         return _pcontroller->SetDesired(values);
     }
 
     bool SetDesired(object o, object otransform)
     {
-        if( otransform == object() ) {
+        if( IS_PYTHONOBJECT_NONE(otransform) ) {
             return SetDesired(o);
         }
         return _pcontroller->SetDesired(ExtractArray<dReal>(o),TransformConstPtr(new Transform(ExtractTransform(otransform))));

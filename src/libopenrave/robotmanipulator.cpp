@@ -76,6 +76,7 @@ void RobotBase::Manipulator::SetLocalToolTransform(const Transform& t)
     _info._tLocalTool = t;
     __hashkinematicsstructure.resize(0);
     __hashstructure.resize(0);
+    __maphashikstructure.clear();
     GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorTool);
 }
 
@@ -93,6 +94,7 @@ void RobotBase::Manipulator::SetLocalToolDirection(const Vector& direction)
     _info._vdirection = direction*(1/RaveSqrt(direction.lengthsqr3())); // should normalize
     __hashkinematicsstructure.resize(0);
     __hashstructure.resize(0);
+    __maphashikstructure.clear();
     GetRobot()->_PostprocessChangedParameters(Prop_RobotManipulatorTool);
 }
 
@@ -101,7 +103,7 @@ void RobotBase::Manipulator::SetName(const std::string& name)
     RobotBasePtr probot=GetRobot();
     FOREACHC(itmanip,probot->GetManipulators()) {
         if( *itmanip != shared_from_this() && name == (*itmanip)->GetName() ) {
-            throw OPENRAVE_EXCEPTION_FORMAT("manipulator name change '%s'->'%s' is colliding with other manipulator", _info._name%name, ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT(_("manipulator name change '%s'->'%s' is colliding with other manipulator"), _info._name%name, ORE_InvalidArguments);
         }
     }
     _info._name=name;
@@ -375,7 +377,7 @@ IkParameterization RobotBase::Manipulator::GetIkParameterization(IkParameterizat
         break;
     }
     default:
-        throw OPENRAVE_EXCEPTION_FORMAT("invalid ik type 0x%x",iktype,ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("invalid ik type 0x%x"),iktype,ORE_InvalidArguments);
     }
     return ikp;
 }
@@ -479,7 +481,7 @@ IkParameterization RobotBase::Manipulator::GetIkParameterization(const IkParamet
         break;
     }
     default:
-        throw OPENRAVE_EXCEPTION_FORMAT("invalid ik type 0x%x",ikparam.GetType(),ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("invalid ik type 0x%x"),ikparam.GetType(),ORE_InvalidArguments);
     }
     return ikp;
 }
@@ -640,6 +642,63 @@ void RobotBase::Manipulator::GetIndependentLinks(std::vector<LinkPtr>& vlinks) c
     }
 }
 
+bool RobotBase::Manipulator::CheckEndEffectorCollision(CollisionReportPtr report) const
+{
+    RobotBasePtr probot(__probot);
+    // get all child links of the manipualtor
+    int iattlink = __pEffector->GetIndex();
+    vector<LinkPtr> vattachedlinks;
+    __pEffector->GetRigidlyAttachedLinks(vattachedlinks);
+
+    CollisionCheckerBasePtr pchecker = probot->GetEnv()->GetCollisionChecker();
+    bool bAllLinkCollisions = !!(pchecker->GetCollisionOptions()&CO_AllLinkCollisions);
+    CollisionReportKeepSaver reportsaver(report);
+    if( !!report && bAllLinkCollisions && report->nKeepPrevious == 0 ) {
+        report->Reset();
+        report->nKeepPrevious = 1; // have to keep the previous since aggregating results
+    }
+
+    bool bincollision = false;
+    
+    FOREACHC(itlink,vattachedlinks) {
+        if( probot->CheckLinkCollision((*itlink)->GetIndex(), report) ) {
+            if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                return true;
+            }
+            bincollision = true;
+        }
+    }
+    FOREACHC(itlink, probot->GetLinks()) {
+        int ilink = (*itlink)->GetIndex();
+        if((ilink == iattlink)|| !(*itlink)->IsEnabled() ) {
+            continue;
+        }
+        // gripper needs to be affected by all joints
+        bool bGripperLink = true;
+        FOREACHC(itarmdof,__varmdofindices) {
+            if( !probot->DoesAffect(probot->GetJointFromDOFIndex(*itarmdof)->GetJointIndex(),ilink) ) {
+                bGripperLink = false;
+                break;
+            }
+        }
+        if( !bGripperLink ) {
+            continue;
+        }
+        for(size_t ijoint = 0; ijoint < probot->GetJoints().size(); ++ijoint) {
+            if( probot->DoesAffect(ijoint,ilink) && !probot->DoesAffect(ijoint,iattlink) ) {
+                if( probot->CheckLinkCollision(ilink, report) ) {
+                    if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                        return true;
+                    }
+                    bincollision = true;
+                }
+                break;
+            }
+        }
+    }
+    return bincollision;
+}
+
 bool RobotBase::Manipulator::CheckEndEffectorCollision(const Transform& tEE, CollisionReportPtr report) const
 {
     RobotBasePtr probot(__probot);
@@ -649,9 +708,23 @@ bool RobotBase::Manipulator::CheckEndEffectorCollision(const Transform& tEE, Col
     int iattlink = __pEffector->GetIndex();
     vector<LinkPtr> vattachedlinks;
     __pEffector->GetRigidlyAttachedLinks(vattachedlinks);
+
+    CollisionCheckerBasePtr pchecker = probot->GetEnv()->GetCollisionChecker();
+    bool bAllLinkCollisions = !!(pchecker->GetCollisionOptions()&CO_AllLinkCollisions);
+    CollisionReportKeepSaver reportsaver(report);
+    if( !!report && bAllLinkCollisions && report->nKeepPrevious == 0 ) {
+        report->Reset();
+        report->nKeepPrevious = 1; // have to keep the previous since aggregating results
+    }
+
+    bool bincollision = false;
+
     FOREACHC(itlink,vattachedlinks) {
         if( probot->CheckLinkCollision((*itlink)->GetIndex(),tdelta*(*itlink)->GetTransform(),report) ) {
-            return true;
+            if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                return true;
+            }
+            bincollision = true;
         }
     }
     FOREACHC(itlink, probot->GetLinks()) {
@@ -673,13 +746,16 @@ bool RobotBase::Manipulator::CheckEndEffectorCollision(const Transform& tEE, Col
         for(size_t ijoint = 0; ijoint < probot->GetJoints().size(); ++ijoint) {
             if( probot->DoesAffect(ijoint,ilink) && !probot->DoesAffect(ijoint,iattlink) ) {
                 if( probot->CheckLinkCollision(ilink,tdelta*(*itlink)->GetTransform(),report) ) {
-                    return true;
+                    if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                        return true;
+                    }
+                    bincollision = true;
                 }
                 break;
             }
         }
     }
-    return false;
+    return bincollision;
 }
 
 bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const Transform& tEE, CollisionReportPtr report) const
@@ -691,9 +767,23 @@ bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const Transform& tEE,
     int iattlink = __pEffector->GetIndex();
     vector<LinkPtr> vattachedlinks;
     __pEffector->GetRigidlyAttachedLinks(vattachedlinks);
+
+    CollisionCheckerBasePtr pchecker = probot->GetEnv()->GetCollisionChecker();
+    bool bAllLinkCollisions = !!(pchecker->GetCollisionOptions()&CO_AllLinkCollisions);
+    CollisionReportKeepSaver reportsaver(report);
+    if( !!report && bAllLinkCollisions && report->nKeepPrevious == 0 ) {
+        report->Reset();
+        report->nKeepPrevious = 1; // have to keep the previous since aggregating results
+    }
+
+    bool bincollision = false;
+
     FOREACHC(itlink,vattachedlinks) {
         if( probot->CheckLinkSelfCollision((*itlink)->GetIndex(),tdelta*(*itlink)->GetTransform(),report) ) {
-            return true;
+            if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                return true;
+            }
+            bincollision = true;
         }
     }
     FOREACHC(itlink, probot->GetLinks()) {
@@ -715,13 +805,16 @@ bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const Transform& tEE,
         for(size_t ijoint = 0; ijoint < probot->GetJoints().size(); ++ijoint) {
             if( probot->DoesAffect(ijoint,ilink) && !probot->DoesAffect(ijoint,iattlink) ) {
                 if( probot->CheckLinkSelfCollision(ilink,tdelta*(*itlink)->GetTransform(),report) ) {
-                    return true;
+                    if( !bAllLinkCollisions ) { // if checking all collisions, have to continue
+                        return true;
+                    }
+                    bincollision = true;
                 }
                 break;
             }
         }
     }
-    return false;
+    return bincollision;
 }
 
 bool RobotBase::Manipulator::CheckEndEffectorCollision(const IkParameterization& ikparam, CollisionReportPtr report, int numredundantsamples) const
@@ -736,19 +829,27 @@ bool RobotBase::Manipulator::CheckEndEffectorCollision(const IkParameterization&
             tStartEE.rot = quatRotateDirection(_info._vdirection, ikparam.GetTranslationDirection5D().dir);
             tStartEE.trans = ikparam.GetTranslationDirection5D().pos;
             Vector qdelta = quatFromAxisAngle(_info._vdirection, 2*M_PI/dReal(numredundantsamples));
+            bool bNotInCollision = false;
             for(int i = 0; i < numredundantsamples; ++i) {
                 if( !CheckEndEffectorCollision(tStartEE,report) ) {
-                    return false;
+                    // doesn't collide, but will need to verify that there actually exists an IK solution there...
+                    // if we accidentally return here even there's no IK solution, then later processes could waste a lot of time looking for it.
+                    bNotInCollision = true;
+                    break;
                 }
                 tStartEE.rot = quatMultiply(tStartEE.rot, qdelta);
             }
-            return true;
+            if( !bNotInCollision ) {
+                return true;
+            }
         }
-        RAVELOG_WARN_FORMAT("do not support redundant checking for iktype 0x%x", ikparam.GetType());
+        else {
+            RAVELOG_WARN_FORMAT("do not support redundant checking for iktype 0x%x", ikparam.GetType());
+        }
     }
 
     IkSolverBasePtr pIkSolver = GetIkSolver();
-    OPENRAVE_ASSERT_OP_FORMAT(GetArmDOF(), <=, ikparam.GetDOF(), "ikparam type 0x%x does not fully determine manipulator %s:%s end effector configuration", ikparam.GetType()%probot->GetName()%GetName(),ORE_InvalidArguments);
+    //OPENRAVE_ASSERT_OP_FORMAT(GetArmDOF(), <=, ikparam.GetDOF(), "ikparam type 0x%x does not fully determine manipulator %s:%s end effector configuration", ikparam.GetType()%probot->GetName()%GetName(),ORE_InvalidArguments);
     OPENRAVE_ASSERT_FORMAT(!!pIkSolver, "manipulator %s:%s does not have an IK solver set",probot->GetName()%GetName(),ORE_Failed);
     OPENRAVE_ASSERT_FORMAT(pIkSolver->Supports(ikparam.GetType()),"manipulator %s:%s ik solver %s does not support ik type 0x%x",probot->GetName()%GetName()%pIkSolver->GetXMLId()%ikparam.GetType(),ORE_InvalidState);
     BOOST_ASSERT(pIkSolver->GetManipulator() == shared_from_this() );
@@ -760,36 +861,63 @@ bool RobotBase::Manipulator::CheckEndEffectorCollision(const IkParameterization&
         localgoal=ikparam;
     }
 
-    // only care about the end effector position, so disable all time consuming options. still leave the custom options in case the user wants to call some custom stuff?
-    // is it necessary to call with IKFO_IgnoreJointLimits knowing that the robot will never reach those solutions?
-    std::vector< std::vector<dReal> > vsolutions;
-    if( !pIkSolver->SolveAll(localgoal, vector<dReal>(), IKFO_IgnoreSelfCollisions,vsolutions) ) {
-        throw OPENRAVE_EXCEPTION_FORMAT("failed to find ik solution for type 0x%x",ikparam.GetType(),ORE_InvalidArguments);
+    // if IK can be solved, then there exists a solution for the end effector that is not in collision
+    IkReturn ikreturn(IKRA_Success);
+    IkReturnPtr pikreturn(&ikreturn,OpenRAVE::utils::null_deleter());
+
+    // need to use free params here since sometimes IK can have 3+ free DOF and it would freeze searching for all of them
+    std::vector<dReal> vFreeParameters;
+    pIkSolver->GetFreeParameters(vFreeParameters);
+    if( pIkSolver->Solve(localgoal, std::vector<dReal>(), vFreeParameters, IKFO_CheckEnvCollisions|IKFO_IgnoreCustomFilters, pikreturn) ) {
+        return false;
     }
-    RobotStateSaver saver(probot);
-    probot->SetActiveDOFs(GetArmIndices());
-    // have to check all solutions since the 6D transform can change even though the ik parameterization doesn't
-    std::list<Transform> listprevtransforms;
-    FOREACH(itsolution,vsolutions) {
-        probot->SetActiveDOFValues(*itsolution,false);
-        Transform t = GetTransform();
-        // check if previous transforms exist
-        bool bhassimilar = false;
-        FOREACH(ittrans,listprevtransforms) {
-            if( TransformDistanceFast(t,*ittrans) < g_fEpsilonLinear*10 ) {
-                bhassimilar = true;
-                break;
+    else {
+        if( (ikreturn._action&IKRA_RejectSelfCollision) != IKRA_RejectSelfCollision && (ikreturn._action&IKRA_RejectEnvCollision) != IKRA_RejectEnvCollision ) {
+            RAVELOG_VERBOSE_FORMAT("ik solution not found due to non-collision reasons (0x%x), returning true anway...", ikreturn._action);
+            // is this a good idea?
+        }
+        if( !!report ) {
+            // solver failed, should have some way of initializing the report...
+            if( numredundantsamples > 0 ) {
+                if( ikparam.GetType() == IKP_TranslationDirection5D ) {
+                    // if here, then already determined that there is a roll that is collision free, so return False
+                    return false;
+                }
             }
         }
-        if( !bhassimilar ) {
-            if( CheckEndEffectorCollision(GetTransform(),report) ) {
-                return true;
-            }
-            listprevtransforms.push_back(t);
-        }
+        return true;
     }
 
-    return false;
+//    // only care about the end effector position, so disable all time consuming options. still leave the custom options in case the user wants to call some custom stuff?
+//    // is it necessary to call with IKFO_IgnoreJointLimits knowing that the robot will never reach those solutions?
+//    std::vector< std::vector<dReal> > vsolutions;
+//    if( !pIkSolver->SolveAll(localgoal, IKFO_IgnoreSelfCollisions,vsolutions) ) {
+//        throw OPENRAVE_EXCEPTION_FORMAT(_("failed to find ik solution for type 0x%x"),ikparam.GetType(),ORE_InvalidArguments);
+//    }
+//    RobotStateSaver saver(probot);
+//    probot->SetActiveDOFs(GetArmIndices());
+//    // have to check all solutions since the 6D transform can change even though the ik parameterization doesn't
+//    std::list<Transform> listprevtransforms;
+//    FOREACH(itsolution,vsolutions) {
+//        probot->SetActiveDOFValues(*itsolution,false);
+//        Transform t = GetTransform();
+//        // check if previous transforms exist
+//        bool bhassimilar = false;
+//        FOREACH(ittrans,listprevtransforms) {
+//            if( TransformDistanceFast(t,*ittrans) < g_fEpsilonLinear*10 ) {
+//                bhassimilar = true;
+//                break;
+//            }
+//        }
+//        if( !bhassimilar ) {
+//            if( !CheckEndEffectorCollision(GetTransform(),report) ) {
+//                return false;
+//            }
+//            listprevtransforms.push_back(t);
+//        }
+//    }
+//
+//    return true;
 }
 
 bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const IkParameterization& ikparam, CollisionReportPtr report) const
@@ -815,7 +943,7 @@ bool RobotBase::Manipulator::CheckEndEffectorSelfCollision(const IkParameterizat
     // is it necessary to call with IKFO_IgnoreJointLimits knowing that the robot will never reach those solutions?
     std::vector< std::vector<dReal> > vsolutions;
     if( !pIkSolver->SolveAll(localgoal, vector<dReal>(), IKFO_IgnoreSelfCollisions,vsolutions) ) {
-        throw OPENRAVE_EXCEPTION_FORMAT("failed to find ik solution for type 0x%x",ikparam.GetType(),ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("failed to find ik solution for type 0x%x"),ikparam.GetType(),ORE_InvalidArguments);
     }
     RobotStateSaver saver(probot);
     probot->SetActiveDOFs(GetArmIndices());
@@ -999,7 +1127,7 @@ void RobotBase::Manipulator::CalculateAngularVelocityJacobian(boost::multi_array
     }
 }
 
-void RobotBase::Manipulator::serialize(std::ostream& o, int options) const
+void RobotBase::Manipulator::serialize(std::ostream& o, int options, IkParameterizationType iktype) const
 {
     if( options & SO_RobotManipulators ) {
         o << (!__pBase ? -1 : __pBase->GetIndex()) << " " << (!__pEffector ? -1 : __pEffector->GetIndex()) << " ";
@@ -1013,7 +1141,7 @@ void RobotBase::Manipulator::serialize(std::ostream& o, int options) const
         }
         SerializeRound(o,_info._tLocalTool);
     }
-    if( options & SO_Kinematics ) {
+    if( options & (SO_Kinematics|SO_InverseKinematics) ) {
         RobotBasePtr probot(__probot);
         Transform tcur;
         std::vector<JointPtr> vjoints;
@@ -1022,7 +1150,11 @@ void RobotBase::Manipulator::serialize(std::ostream& o, int options) const
             FOREACH(itjoint, vjoints) {
                 tcur = tcur * (*itjoint)->GetInternalHierarchyLeftTransform() * (*itjoint)->GetInternalHierarchyRightTransform();
             }
-            tcur = tcur*_info._tLocalTool;
+            tcur = tcur;
+            // if 6D transform IK, then don't inlucde the local tool transform!
+            if( !!(options & SO_Kinematics) || iktype != IKP_Transform6D ) {
+                tcur *= _info._tLocalTool;
+            }
             SerializeRound(o,tcur);
             o << __varmdofindices.size() << " ";
 
@@ -1059,7 +1191,9 @@ void RobotBase::Manipulator::serialize(std::ostream& o, int options) const
             }
         }
     }
-    if( options & (SO_Kinematics|SO_RobotManipulators) ) {
+
+    // output direction if SO_Kinematics|SO_RobotManipulators. if IK hash, then output only on certain ik types.
+    if( !!(options & (SO_Kinematics|SO_RobotManipulators)) || (!!(options&SO_InverseKinematics) && (iktype == IKP_TranslationDirection5D || iktype == IKP_Direction3D || iktype == IKP_Ray4D)) ) {
         SerializeRound3(o,_info._vdirection);
     }
 }
@@ -1086,7 +1220,7 @@ const std::string& RobotBase::Manipulator::GetStructureHash() const
     if( __hashstructure.size() == 0 ) {
         ostringstream ss;
         ss << std::fixed << std::setprecision(SERIALIZATION_PRECISION);
-        serialize(ss,SO_RobotManipulators);
+        serialize(ss,SO_RobotManipulators|SO_Kinematics);
         __hashstructure = utils::GetMD5HashString(ss.str());
     }
     return __hashstructure;
@@ -1103,10 +1237,25 @@ const std::string& RobotBase::Manipulator::GetKinematicsStructureHash() const
     return __hashkinematicsstructure;
 }
 
+const std::string& RobotBase::Manipulator::GetInverseKinematicsStructureHash(IkParameterizationType iktype) const
+{
+    std::map<IkParameterizationType, std::string>::const_iterator it = __maphashikstructure.find(iktype);
+    if( it == __maphashikstructure.end() ) {
+        ostringstream ss;
+        ss << std::fixed << std::setprecision(SERIALIZATION_PRECISION);
+        serialize(ss,SO_InverseKinematics,iktype);
+        __maphashikstructure[iktype] = utils::GetMD5HashString(ss.str());
+        return __maphashikstructure[iktype];
+    }
+    else {
+        return it->second;
+    }
+}
+
 void RobotBase::Manipulator::_ComputeInternalInformation()
 {
     if( !utils::IsValidName(_info._name) ) {
-        throw OPENRAVE_EXCEPTION_FORMAT("manipulator name \"%s\" is not valid", GetName(), ORE_Failed);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("manipulator name \"%s\" is not valid"), GetName(), ORE_Failed);
     }
     RobotBasePtr probot(__probot);
     __pBase = probot->GetLink(_info._sBaseLinkName);
@@ -1116,6 +1265,7 @@ void RobotBase::Manipulator::_ComputeInternalInformation()
     __pIkSolver.reset();
     __hashstructure.resize(0);
     __hashkinematicsstructure.resize(0);
+    __maphashikstructure.clear();
     if( !__pBase || !__pEffector ) {
         RAVELOG_WARN(str(boost::format("manipulator %s has undefined base and end effector links %s, %s\n")%GetName()%_info._sBaseLinkName%_info._sEffectorLinkName));
         __armspec = ConfigurationSpecification();

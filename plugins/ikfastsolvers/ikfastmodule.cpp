@@ -198,9 +198,11 @@ public:
 
         IkSolverBasePtr CreateSolver(EnvironmentBasePtr penv, const vector<dReal>& vfreeinc)
         {
-            int ikfastversion = boost::lexical_cast<int>(GetIkFastVersion());
+            std::stringstream sversion(GetIkFastVersion());
+            uint32_t ikfastversion = 0;
+            sversion >> std::hex >> ikfastversion;
             if( ikfastversion < 60 ) {
-                throw OPENRAVE_EXCEPTION_FORMAT("ikfast version %d not supported", ikfastversion, ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT(_("ikfast version %d not supported"), ikfastversion, ORE_InvalidArguments);
             }
             std::stringstream ss;
 #ifdef OPENRAVE_IKFAST_FLOAT32
@@ -215,7 +217,7 @@ public:
                 newfunctions->_library = shared_from_this();
                 return CreateIkFastSolver(penv,ss,newfunctions,vfreeinc);
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("uninitialized ikfast functions",ORE_InvalidState);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("uninitialized ikfast functions"),ORE_InvalidState);
         }
 
         const vector<string>& GetIkNames() const {
@@ -243,7 +245,7 @@ public:
             if( !!_ikdouble ) {
                 return _ikdouble->_GetIkType();
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("uninitialized ikfast functions",ORE_InvalidState);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("uninitialized ikfast functions"),ORE_InvalidState);
         }
         std::string GetIkFastVersion() {
 #ifdef OPENRAVE_IKFAST_FLOAT32
@@ -254,7 +256,7 @@ public:
             if( !!_ikdouble ) {
                 return _ikdouble->_GetIkFastVersion();
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("uninitialized ikfast functions",ORE_InvalidState);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("uninitialized ikfast functions"),ORE_InvalidState);
         }
 
 #ifdef OPENRAVE_IKFAST_FLOAT32
@@ -438,7 +440,7 @@ public:
                 }
             }
             if(iktype == IKP_None) {
-                throw openrave_exception(str(boost::format("could not find iktype %s")%striktype));
+                throw openrave_exception(str(boost::format(_("could not find iktype %s"))%striktype));
             }
         }
 
@@ -470,7 +472,7 @@ public:
         for(int iter = 0; iter < 2; ++iter) {
             string ikfilenamefound;
             // check if exists and is loadable, if not, regenerate the IK.
-            std::string ikfilenameprefix = str(boost::format("kinematics.%s/ikfast%s.%s.%s.")%pmanip->GetKinematicsStructureHash()%_ikfastversion%striktype%_platform);
+            std::string ikfilenameprefix = str(boost::format("kinematics.%s/ikfast%s.%s.%s.")%pmanip->GetInverseKinematicsStructureHash(iktype)%_ikfastversion%striktype%_platform);
             int ikdof = IkParameterization::GetDOF(iktype);
             if( ikdof > pmanip->GetArmDOF() ) {
                 RAVELOG_WARN(str(boost::format("not enough joints (%d) for ik %s")%pmanip->GetArmIndices().size()%striktype));
@@ -526,7 +528,7 @@ public:
                 atts.push_back(make_pair(string("target"), probot->GetName()));
                 string tempfilename = RaveGetHomeDirectory() + str(boost::format("/testikfastrobot%d.dae")%(RaveRandomInt()%1000));
                 // file not found, so create
-                RAVELOG_INFO(str(boost::format("Generating inverse kinematics %s for manip %s:%s, hash=%s, saving intermediate data to %s, will take several minutes...\n")%striktype%probot->GetName()%pmanip->GetName()%pmanip->GetKinematicsStructureHash()%tempfilename));
+                RAVELOG_INFO(str(boost::format("Generating inverse kinematics %s for manip %s:%s, hash=%s, saving intermediate data to %s, will take several minutes...\n")%striktype%probot->GetName()%pmanip->GetName()%pmanip->GetInverseKinematicsStructureHash(iktype)%tempfilename));
                 GetEnv()->Save(tempfilename,EnvironmentBase::SO_Body,atts);
                 string cmdgen = str(boost::format("openrave.py --database inversekinematics --usecached --robot=\"%s\" --manipname=%s --iktype=%s")%tempfilename%pmanip->GetName()%striktype);
                 // use raw system call, popen causes weird crash in the inversekinematics compiler
@@ -546,7 +548,7 @@ public:
                 return false;
             }
 
-            string ikfastname = str(boost::format("ikfast.%s.%s.%s")%pmanip->GetKinematicsStructureHash()%striktype%pmanip->GetName());
+            string ikfastname = str(boost::format("ikfast.%s.%s.%s")%pmanip->GetInverseKinematicsStructureHash(iktype)%striktype%pmanip->GetName());
             boost::shared_ptr<IkLibrary> lib = _AddIkLibrary(ikfastname,ikfilenamefound);
             bool bsuccess = true;
             if( !lib ) {
@@ -627,7 +629,7 @@ public:
             return _PerfTiming<double>(sout,lib->_ikdouble,num, maxtime);
         }
         else {
-            throw openrave_exception("bad real size");
+            throw openrave_exception(_("bad real size"));
         }
         return true;
     }
@@ -1054,7 +1056,7 @@ public:
                     }
                     s << "]" << endl << "ikparameterization=\"" << twrist << "\"" << endl;
                     s << "raw ik command: ";
-                    GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);
+                    GetIKFastCommand(s, twrist, pmanip);
                     FOREACH(itfree,vfreeparameters) {
                         s << *itfree << " ";
                     }
@@ -1083,7 +1085,7 @@ public:
                         s << "]" << endl << "ikparamin=\"" << twrist << "\"" << endl;
                         s << "ikparamout=\"" << twrist_out << "\"" << endl;
                         s << "raw ik command: ";
-                        GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);
+                        GetIKFastCommand(s, twrist, pmanip);
                         FOREACH(itfree,vfreeparameters_out) {
                             s << *itfree << " ";
                         }
@@ -1142,7 +1144,7 @@ public:
                             s << "]" << endl << "in: " << twrist << endl;
                             s << "out: " << twrist_out << endl;
                             s << "raw ik command: ";
-                            GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);
+                            GetIKFastCommand(s, twrist, pmanip);
                             FOREACH(itfree,vfreeparameters_out) {
                                 s << *itfree << " ";
                             }
@@ -1251,7 +1253,7 @@ public:
                             s << endl << "]" << endl << "in: " << twrist << endl;
                             s << "out: " << twrist_out << endl;
                             s << "raw ik command: ";
-                            GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);
+                            GetIKFastCommand(s, twrist, pmanip);
                             FOREACH(itfree,vfreeparameters_out) {
                                 s << *itfree << " ";
                             }
@@ -1271,7 +1273,7 @@ public:
                     if( IS_DEBUGLEVEL(Level_Verbose) ) {
                         s.str("");
                         s << "raw ik command: ";
-                        GetIKFastCommand(s, pmanip->GetBase()->GetTransform().inverse()*twrist);
+                        GetIKFastCommand(s, twrist, pmanip);
                         FOREACH(itfree,vfreeparameters_real) {
                             s << *itfree << " ";
                         }
@@ -1305,10 +1307,12 @@ public:
         return true;
     }
 
-    static void GetIKFastCommand(std::ostream& o, const IkParameterization& param) {
+    static void GetIKFastCommand(std::ostream& o, const IkParameterization& globalparam, RobotBase::ManipulatorPtr pmanip)
+    {
+        IkParameterization param = pmanip->GetBase()->GetTransform().inverse()*globalparam;
         switch(param.GetType()) {
         case IKP_Transform6D: {
-            TransformMatrix tm = param.GetTransform6D();
+            TransformMatrix tm = param.GetTransform6D()*pmanip->GetLocalToolTransform().inverse(); ///< ik takes the original matrix
             o << tm.m[0] << " " << tm.m[1] << " " << tm.m[2] << " " << tm.trans[0] << " " << tm.m[4] << " " << tm.m[5] << " " << tm.m[6] << " " << tm.trans[1] << " " << tm.m[8] << " " << tm.m[9] << " " << tm.m[10] << " " << tm.trans[2] << " ";
             break;
         }

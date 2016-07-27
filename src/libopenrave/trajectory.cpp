@@ -65,7 +65,7 @@ InterfaceBasePtr TrajectoryBase::deserialize(std::istream& I)
         I.seekg((size_t)pos+ppsize);
     }
     else {
-        throw OPENRAVE_EXCEPTION_FORMAT("error, failed to find </trajectory> in %s",buf.str(),ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("error, failed to find </trajectory> in %s"),buf.str(),ORE_InvalidArguments);
     }
     xmlreaders::TrajectoryReader reader(GetEnv(),shared_trajectory());
     LocalXML::ParseXMLData(BaseXMLReaderPtr(&reader,utils::null_deleter()), pbuf.c_str(), ppsize);
@@ -89,6 +89,29 @@ void TrajectoryBase::Sample(std::vector<dReal>& data, dReal time, const Configur
     Sample(vinternaldata,time);
     data.resize(spec.GetDOF());
     ConfigurationSpecification::ConvertData(data.begin(),spec,vinternaldata.begin(),GetConfigurationSpecification(),1,GetEnv());
+}
+
+void TrajectoryBase::SamplePoints(std::vector<dReal>& data, const std::vector<dReal>& times) const
+{
+    std::vector<dReal> tempdata;
+    int dof = GetConfigurationSpecification().GetDOF();
+    data.resize(dof*times.size());
+    std::vector<dReal>::iterator itdata = data.begin();
+    for(size_t i = 0; i < times.size(); ++i, itdata += dof) {
+        Sample(tempdata, times[i]);
+        std::copy(tempdata.begin(), tempdata.end(), itdata);
+    }    
+}
+
+void TrajectoryBase::SamplePoints(std::vector<dReal>& data, const std::vector<dReal>& times, const ConfigurationSpecification& spec) const
+{
+    std::vector<dReal> tempdata;
+    data.resize(spec.GetDOF()*times.size());
+    std::vector<dReal>::iterator itdata = data.begin();
+    for(size_t i = 0; i < times.size(); ++i, itdata += spec.GetDOF()) {
+        Sample(tempdata, times[i], spec);
+        std::copy(tempdata.begin(), tempdata.end(), itdata);
+    }
 }
 
 void TrajectoryBase::GetWaypoints(size_t startindex, size_t endindex, std::vector<dReal>& data, const ConfigurationSpecification& spec) const

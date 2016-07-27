@@ -194,20 +194,24 @@ void QtCoinViewer::_InitConstructor(std::istream& sinput)
     RegisterCommand("Show", boost::bind(&QtCoinViewer::_ShowCommand, this, _1, _2),
                     "executs the show directly");
     RegisterCommand("TrackLink", boost::bind(&QtCoinViewer::_TrackLinkCommand, this, _1, _2),
-                    "camera tracks the link maintaining a specific relative transform: robotname, manipname, _fTrackingRadius");
+                    "camera tracks the link maintaining a specific relative transform: robotname, manipname, focalDistance");
     RegisterCommand("TrackManipulator", boost::bind(&QtCoinViewer::_TrackManipulatorCommand, this, _1, _2),
-                    "camera tracks the manipulator maintaining a specific relative transform: robotname, manipname, _fTrackingRadius");
+                    "camera tracks the manipulator maintaining a specific relative transform: robotname, manipname, focalDistance");
+    RegisterCommand("SetTrackingAngleToUp", boost::bind(&QtCoinViewer::_SetTrackingAngleToUpCommand, this, _1, _2),
+                    "sets a new angle to up");
 
+    _fTrackAngleToUp = 0.3;
     _bLockEnvironment = true;
     _pToggleDebug = NULL;
     _pSelectedCollisionChecker = NULL;
+    _pToggleSelfCollision = NULL;
     _pSelectedPhysicsEngine = NULL;
     _pToggleSimulation = NULL;
     _bInIdleThread = false;
     _bAutoSetCamera = true;
     _videocodec = -1;
     _bRenderFiguresInCamera = false;
-    _fTrackingRadius = 0.1;
+    _focalDistance = 0.0;
 
     //vlayout = new QVBoxLayout(this);
     view1 = new QGroupBox(this);
@@ -356,7 +360,7 @@ void QtCoinViewer::_InitConstructor(std::istream& sinput)
 
     // set to the classic locale so that number serialization/hashing works correctly
     // for some reason qt4 resets the locale to the default locale at some point, and openrave stops working
-    std::locale::global(std::locale::classic());
+    // std::locale::global(std::locale::classic());
 
     if( nAlwaysOnTopFlag != 0 ) {
         Qt::WindowFlags flags = Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint;
@@ -1310,8 +1314,9 @@ void QtCoinViewer::EnvironmentSync()
     boost::mutex::scoped_lock lock(_mutexUpdateModels);
     _bModelsUpdated = false;
     _condUpdateModels.wait(lock);
-    if( !_bModelsUpdated )
+    if( !_bModelsUpdated ) {
         RAVELOG_WARN("failed to update models from environment sync\n");
+    }
 }
 
 void QtCoinViewer::_SetCamera(const RaveTransform<float>& _t, float focalDistance)
@@ -1382,6 +1387,12 @@ RaveTransform<float> QtCoinViewer::GetCameraTransform() const
     // have to flip Z axis
     RaveTransform<float> trot; trot.rot = quatFromAxisAngle(RaveVector<float>(1,0,0),(float)PI);
     return _Tcamera*trot;
+}
+
+float QtCoinViewer::GetCameraDistanceToFocus() const
+{
+    boost::mutex::scoped_lock lock(_mutexMessages);
+    return _focalDistance;
 }
 
 geometry::RaveCameraIntrinsics<float> QtCoinViewer::GetCameraIntrinsics() const
@@ -2332,6 +2343,9 @@ bool QtCoinViewer::_ShowCommand(ostream& sout, istream& sinput)
     sinput >> showtype;
     if( showtype ) {
         _pviewer->show();
+        // just in case?
+        SoDB::enableRealTimeSensor(true);
+        SoSceneManager::enableRealTimeUpdate(true);
     }
     else {
         _pviewer->hide();
@@ -2343,7 +2357,12 @@ bool QtCoinViewer::_TrackLinkCommand(ostream& sout, istream& sinput)
 {
     bool bresetvelocity = true;
     std::string bodyname, linkname;
-    sinput >> bodyname >> linkname >> _fTrackingRadius >> bresetvelocity;
+    float focalDistance = 0.0;
+    Transform tTrackingLinkRelative;
+    sinput >> bodyname >> linkname >> focalDistance >> bresetvelocity;
+    if( focalDistance > 0 ) {
+        GetCamera()->focalDistance = focalDistance; // TODO is this thread safe?
+    }
     _ptrackinglink.reset();
     _ptrackingmanip.reset();
     EnvironmentMutex::scoped_lock lockenv(GetEnv()->GetMutex());
@@ -2352,6 +2371,16 @@ bool QtCoinViewer::_TrackLinkCommand(ostream& sout, istream& sinput)
         return false;
     }
     _ptrackinglink = pbody->GetLink(linkname);
+    if( !!_ptrackinglink ) {
+        sinput >> tTrackingLinkRelative;
+        if( !!sinput ) {
+            _tTrackingLinkRelative = tTrackingLinkRelative;
+        }
+        else {
+            RAVELOG_WARN("failed to get tracking link relative trans\n");
+            _tTrackingLinkRelative = Transform(); // use the identity
+        }
+    }
     if( bresetvelocity ) {
         _tTrackingCameraVelocity.trans = _tTrackingCameraVelocity.rot = Vector(); // reset velocity?
     }
@@ -2362,7 +2391,11 @@ bool QtCoinViewer::_TrackManipulatorCommand(ostream& sout, istream& sinput)
 {
     bool bresetvelocity = true;
     std::string robotname, manipname;
-    sinput >> robotname >> manipname >> _fTrackingRadius >> bresetvelocity;
+    float focalDistance = 0.0;
+    sinput >> robotname >> manipname >> focalDistance >> bresetvelocity;
+    if( focalDistance > 0 ) {
+        GetCamera()->focalDistance = focalDistance; // TODO is this thread safe?
+    }
     _ptrackinglink.reset();
     _ptrackingmanip.reset();
     EnvironmentMutex::scoped_lock lockenv(GetEnv()->GetMutex());
@@ -2375,6 +2408,12 @@ bool QtCoinViewer::_TrackManipulatorCommand(ostream& sout, istream& sinput)
         _tTrackingCameraVelocity.trans = _tTrackingCameraVelocity.rot = Vector(); // reset velocity?
     }
     return !!_ptrackingmanip;
+}
+
+bool QtCoinViewer::_SetTrackingAngleToUpCommand(ostream& sout, istream& sinput)
+{
+    sinput >> _fTrackAngleToUp;
+    return true;
 }
 
 int QtCoinViewer::main(bool bShow)
@@ -2951,7 +2990,7 @@ void QtCoinViewer::UpdateFromModel()
                 // check to make sure the real GUI data is also NULL
                 if( !pbody->GetUserData("qtcoinviewer") ) {
                     if( _mapbodies.find(pbody) != _mapbodies.end() ) {
-                        RAVELOG_WARN("body %s already registered!\n", pbody->GetName().c_str());
+                        RAVELOG_WARN_FORMAT("body %s already registered!", pbody->GetName());
                         continue;
                     }
 
@@ -3080,8 +3119,8 @@ void QtCoinViewer::_UpdateCameraTransform(float fTimeElapsed)
         KinBody::LinkPtr ptrackinglink = _ptrackinglink;
         if( !!ptrackinglink ) {
             bTracking = true;
-            tTrack = ptrackinglink->GetTransform();
-            tTrack.trans = ptrackinglink->ComputeAABB().pos;
+            tTrack = ptrackinglink->GetTransform()*_tTrackingLinkRelative;
+            //tTrack.trans = ptrackinglink->ComputeAABB().pos;
         }
         RobotBase::ManipulatorPtr ptrackingmanip=_ptrackingmanip;
         if( !!ptrackingmanip ) {
@@ -3091,11 +3130,10 @@ void QtCoinViewer::_UpdateCameraTransform(float fTimeElapsed)
 
         if( bTracking ) {
             RaveVector<float> vup(0,0,1); // up vector that camera should always be oriented to
-            const float angletoup = 0.3; // tilt a little when looking at the point
             RaveVector<float> vlookatdir = _Tcamera.trans - tTrack.trans;
             vlookatdir -= vup*vup.dot3(vlookatdir);
             float flookatlen = sqrtf(vlookatdir.lengthsqr3());
-            vlookatdir = vlookatdir*cosf(angletoup) + flookatlen*sinf(angletoup)*vup; // flookatlen shouldn't change
+            vlookatdir = vlookatdir*cosf(_fTrackAngleToUp) + flookatlen*sinf(_fTrackAngleToUp)*vup; // flookatlen shouldn't change
             if( flookatlen > g_fEpsilon ) {
                 vlookatdir *= 1/flookatlen;
             }
@@ -3113,7 +3151,8 @@ void QtCoinViewer::_UpdateCameraTransform(float fTimeElapsed)
             RaveVector<float> vDestQuat = quatMultiply(quatFromAxisAngle(vup, -angle), quatRotateDirection(RaveVector<float>(0,1,0), vup));
             //transformLookat(tTrack.trans, _Tcamera.trans, vup);
 
-            RaveVector<float> vDestPos = tTrack.trans + ExtractAxisFromQuat(vDestQuat,2)*_fTrackingRadius;
+            // focal distance is the tracking radius. ie how far from the coord system camera shoud be
+            RaveVector<float> vDestPos = tTrack.trans + ExtractAxisFromQuat(vDestQuat,2)*GetCamera()->focalDistance.getValue();
 
             if(1) {
                 // PID animation
@@ -3149,6 +3188,7 @@ void QtCoinViewer::_UpdateCameraTransform(float fTimeElapsed)
     int height = centralWidget()->size().height();
     _ivCamera->aspectRatio = (float)view1->size().width() / (float)view1->size().height();
 
+    _focalDistance = GetCamera()->focalDistance.getValue();
     _camintrinsics.fy = 0.5*height/RaveTan(0.5f*GetCamera()->heightAngle.getValue());
     _camintrinsics.fx = (float)width*_camintrinsics.fy/((float)height*GetCamera()->aspectRatio.getValue());
     _camintrinsics.cx = (float)width/2;

@@ -139,7 +139,7 @@ bool ExtractRay(object o, RAY& ray)
 class Ray_pickle_suite : public pickle_suite
 {
 public:
-    static tuple getinitargs(const PyRay& r)
+    static boost::python::tuple getinitargs(const PyRay& r)
     {
         return boost::python::make_tuple(toPyVector3(r.r.pos),toPyVector3(r.r.dir));
     }
@@ -185,7 +185,7 @@ object toPyAABB(const AABB& ab)
 class AABB_pickle_suite : public pickle_suite
 {
 public:
-    static tuple getinitargs(const PyAABB& ab)
+    static boost::python::tuple getinitargs(const PyAABB& ab)
     {
         return boost::python::make_tuple(toPyVector3(ab.ab.pos),toPyVector3(ab.ab.extents));
     }
@@ -266,7 +266,7 @@ object toPyTriMesh(const TriMesh& mesh)
 class TriMesh_pickle_suite : public pickle_suite
 {
 public:
-    static tuple getinitargs(const PyTriMesh& r)
+    static boost::python::tuple getinitargs(const PyTriMesh& r)
     {
         return boost::python::make_tuple(r.vertices,r.indices);
     }
@@ -379,7 +379,7 @@ public:
     {
         std::vector<dReal> vdata = ExtractArray<dReal>(odata);
         Transform t;
-        if( !(otransform == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(otransform) ) {
             t = openravepy::ExtractTransform(otransform);
         }
         if( _spec.ExtractTransform(t,vdata.begin(),openravepy::GetKinBody(pybody)) ) {
@@ -553,7 +553,7 @@ public:
 class ConfigurationSpecification_pickle_suite : public pickle_suite
 {
 public:
-    static tuple getinitargs(const PyConfigurationSpecification& pyspec)
+    static boost::python::tuple getinitargs(const PyConfigurationSpecification& pyspec)
     {
         std::stringstream ss;
         ss << pyspec._spec;
@@ -600,7 +600,7 @@ PyConfigurationSpecificationPtr pyRaveGetAffineConfigurationSpecification(int af
 object pyRaveGetAffineDOFValuesFromTransform(object otransform, int affinedofs, object oActvAffineRotationAxis=object())
 {
     Vector vActvAffineRotationAxis(0,0,1);
-    if( !(oActvAffineRotationAxis == object()) ) {
+    if( !IS_PYTHONOBJECT_NONE(oActvAffineRotationAxis) ) {
         vActvAffineRotationAxis = ExtractVector3(oActvAffineRotationAxis);
     }
     std::vector<dReal> values(RaveGetAffineDOF(affinedofs));
@@ -656,7 +656,7 @@ void raveLogVerbose(const string &s)
 int pyGetIntFromPy(object olevel, int defaultvalue)
 {
     int level = defaultvalue;
-    if( !(olevel == object()) ) {
+    if( !IS_PYTHONOBJECT_NONE(olevel) ) {
         // some version of boost python return true for extract::check, even through the actual conversion will throw an OverflowError
         // therefore check for conversion compatibility starting at the longest signed integer
         extract<int64_t> levelint64(olevel);
@@ -740,25 +740,29 @@ object RaveGetLoadedInterfaces()
     return ointerfacenames;
 }
 
-PyInterfaceBasePtr RaveClone(PyInterfaceBasePtr pyreference, int cloningoptions)
+PyInterfaceBasePtr pyRaveClone(PyInterfaceBasePtr pyreference, int cloningoptions, PyEnvironmentBasePtr pyenv=PyEnvironmentBasePtr())
 {
-    InterfaceBasePtr pclone = OpenRAVE::RaveClone<InterfaceBase>(pyreference->GetInterfaceBase(), cloningoptions);
-    switch(pclone->GetInterfaceType()) {
-    case PT_Planner: return toPyPlanner(RaveInterfaceCast<PlannerBase>(pclone), pyreference->GetEnv());
-    case PT_Robot: return toPyRobot(RaveInterfaceCast<RobotBase>(pclone), pyreference->GetEnv());
-    case PT_SensorSystem: return toPySensorSystem(RaveInterfaceCast<SensorSystemBase>(pclone), pyreference->GetEnv());
-    case PT_Controller: return toPyController(RaveInterfaceCast<ControllerBase>(pclone), pyreference->GetEnv());
-    case PT_Module: return toPyModule(RaveInterfaceCast<ModuleBase>(pclone), pyreference->GetEnv());
-    case PT_InverseKinematicsSolver: return toPyIkSolver(RaveInterfaceCast<IkSolverBase>(pclone), pyreference->GetEnv());
-    case PT_KinBody: return toPyKinBody(RaveInterfaceCast<KinBody>(pclone), pyreference->GetEnv());
-    case PT_PhysicsEngine: return toPyPhysicsEngine(RaveInterfaceCast<PhysicsEngineBase>(pclone), pyreference->GetEnv());
-    case PT_Sensor: return toPySensor(RaveInterfaceCast<SensorBase>(pclone), pyreference->GetEnv());
-    case PT_CollisionChecker: return toPyCollisionChecker(RaveInterfaceCast<CollisionCheckerBase>(pclone), pyreference->GetEnv());
-    case PT_Trajectory: return toPyTrajectory(RaveInterfaceCast<TrajectoryBase>(pclone), pyreference->GetEnv());
-    case PT_Viewer: return toPyViewer(RaveInterfaceCast<ViewerBase>(pclone), pyreference->GetEnv());
-    case PT_SpaceSampler: return toPySpaceSampler(RaveInterfaceCast<SpaceSamplerBase>(pclone), pyreference->GetEnv());
+    if( !pyenv ) {
+        pyenv = pyreference->GetEnv();
     }
-    throw openrave_exception("invalid interface type",ORE_InvalidArguments);
+    EnvironmentBasePtr penv = openravepy::GetEnvironment(pyenv);
+    InterfaceBasePtr pclone = OpenRAVE::RaveClone<InterfaceBase>(pyreference->GetInterfaceBase(), cloningoptions, penv);
+    switch(pclone->GetInterfaceType()) {
+    case PT_Planner: return toPyPlanner(RaveInterfaceCast<PlannerBase>(pclone), pyenv);
+    case PT_Robot: return toPyRobot(RaveInterfaceCast<RobotBase>(pclone), pyenv);
+    case PT_SensorSystem: return toPySensorSystem(RaveInterfaceCast<SensorSystemBase>(pclone), pyenv);
+    case PT_Controller: return toPyController(RaveInterfaceCast<ControllerBase>(pclone), pyenv);
+    case PT_Module: return toPyModule(RaveInterfaceCast<ModuleBase>(pclone), pyenv);
+    case PT_InverseKinematicsSolver: return toPyIkSolver(RaveInterfaceCast<IkSolverBase>(pclone), pyenv);
+    case PT_KinBody: return toPyKinBody(RaveInterfaceCast<KinBody>(pclone), pyenv);
+    case PT_PhysicsEngine: return toPyPhysicsEngine(RaveInterfaceCast<PhysicsEngineBase>(pclone), pyenv);
+    case PT_Sensor: return toPySensor(RaveInterfaceCast<SensorBase>(pclone), pyenv);
+    case PT_CollisionChecker: return toPyCollisionChecker(RaveInterfaceCast<CollisionCheckerBase>(pclone), pyenv);
+    case PT_Trajectory: return toPyTrajectory(RaveInterfaceCast<TrajectoryBase>(pclone), pyenv);
+    case PT_Viewer: return toPyViewer(RaveInterfaceCast<ViewerBase>(pclone), pyenv);
+    case PT_SpaceSampler: return toPySpaceSampler(RaveInterfaceCast<SpaceSamplerBase>(pclone), pyenv);
+    }
+    throw openrave_exception(_("invalid interface type"),ORE_InvalidArguments);
 }
 
 object quatFromAxisAngle1(object oaxis)
@@ -780,14 +784,14 @@ object quatFromRotationMatrix(object R)
     return toPyVector4(quatFromMatrix(t));
 }
 
-object InterpolateQuatSlerp(object q1, object q2, dReal t)
+object InterpolateQuatSlerp(object q1, object q2, dReal t, bool forceshortarc=true)
 {
-    return toPyVector4(InterpolateQuatSlerp(ExtractVector4(q1),ExtractVector4(q2),t));
+    return toPyVector4(InterpolateQuatSlerp(ExtractVector4(q1),ExtractVector4(q2),t, forceshortarc));
 }
 
-object InterpolateQuatSquad(object q0, object q1, object q2, object q3, dReal t)
+object InterpolateQuatSquad(object q0, object q1, object q2, object q3, dReal t, bool forceshortarc=true)
 {
-    return toPyVector4(InterpolateQuatSquad(ExtractVector4(q0),ExtractVector4(q1),ExtractVector4(q2),ExtractVector4(q3), t));
+    return toPyVector4(InterpolateQuatSquad(ExtractVector4(q0),ExtractVector4(q1),ExtractVector4(q2),ExtractVector4(q3), t, forceshortarc));
 }
 
 object axisAngleFromRotationMatrix(object R)
@@ -995,9 +999,12 @@ string poseSerialization(object o)
 
 BOOST_PYTHON_FUNCTION_OVERLOADS(RaveInitialize_overloads, pyRaveInitialize, 0, 2)
 BOOST_PYTHON_FUNCTION_OVERLOADS(RaveFindLocalFile_overloads, OpenRAVE::RaveFindLocalFile, 1, 2)
+BOOST_PYTHON_FUNCTION_OVERLOADS(InterpolateQuatSlerp_overloads, openravepy::InterpolateQuatSlerp, 3, 4)
+BOOST_PYTHON_FUNCTION_OVERLOADS(InterpolateQuatSquad_overloads, openravepy::InterpolateQuatSquad, 5, 6)
 BOOST_PYTHON_FUNCTION_OVERLOADS(ComputePoseDistSqr_overloads, openravepy::ComputePoseDistSqr, 2, 3)
 BOOST_PYTHON_FUNCTION_OVERLOADS(pyRaveGetAffineConfigurationSpecification_overloads, openravepy::pyRaveGetAffineConfigurationSpecification, 1, 3)
 BOOST_PYTHON_FUNCTION_OVERLOADS(pyRaveGetAffineDOFValuesFromTransform_overloads, openravepy::pyRaveGetAffineDOFValuesFromTransform, 2, 3)
+BOOST_PYTHON_FUNCTION_OVERLOADS(RaveClone_overloads, pyRaveClone, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ExtractTransform_overloads, PyConfigurationSpecification::ExtractTransform, 3, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ExtractIkParameterization_overloads, PyConfigurationSpecification::ExtractIkParameterization, 1, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(ExtractAffineValues_overloads, PyConfigurationSpecification::ExtractAffineValues, 3, 4)
@@ -1094,7 +1101,9 @@ void init_openravepy_global()
     .def("close",&PyUserData::Close,"deprecated")
     .def("Close",&PyUserData::Close,"force releasing the user handle point.")
     ;
-    class_<PySerializableData, boost::shared_ptr<PySerializableData>, bases<PyUserData> >("SerializableData", DOXY_CLASS(SerializableData), no_init)
+    class_<PySerializableData, boost::shared_ptr<PySerializableData>, bases<PyUserData> >("SerializableData", DOXY_CLASS(SerializableData))
+    .def(init<std::string>(args("data")))
+    .def("Close",&PySerializableData::Close,DOXY_FN(SerializableData,Close))
     .def("Serialize",&PySerializableData::Serialize,args("options"), DOXY_FN(SerializableData, Serialize))
     .def("Deserialize",&PySerializableData::Deserialize,args("data"), DOXY_FN(SerializableData, Deserialize))
     ;
@@ -1154,13 +1163,13 @@ void init_openravepy_global()
                                            .def("IsValid",&PyConfigurationSpecification::IsValid,DOXY_FN(ConfigurationSpecification,IsValid))
                                            .def("ResetGroupOffsets",&PyConfigurationSpecification::ResetGroupOffsets,DOXY_FN(ConfigurationSpecification,ResetGroupOffsets))
                                            .def("AddVelocityGroups",&PyConfigurationSpecification::AddVelocityGroups,args("adddeltatime"), DOXY_FN(ConfigurationSpecification,AddVelocityGroups))
-                                           .def("AddDerivativeGroups",&PyConfigurationSpecification::AddDerivativeGroups,args("adddeltatime"), DOXY_FN(ConfigurationSpecification,AddDerivativeGroups))
+                                           .def("AddDerivativeGroups",&PyConfigurationSpecification::AddDerivativeGroups,args("deriv", "adddeltatime"), DOXY_FN(ConfigurationSpecification,AddDerivativeGroups))
                                            .def("AddDeltaTimeGroup",&PyConfigurationSpecification::AddDeltaTimeGroup,DOXY_FN(ConfigurationSpecification,AddDeltaTimeGroup))
                                            .def("RemoveGroups", &PyConfigurationSpecification::RemoveGroups, RemoveGroups_overloads(args("groupname","exactmatch"), DOXY_FN(ConfigurationSpecification, RemoveGroups)))
                                            .def("AddGroup",addgroup1,args("name","dof","interpolation"), DOXY_FN(ConfigurationSpecification,AddGroup "const std::string; int; const std::string"))
                                            .def("AddGroup",addgroup2,args("group"), DOXY_FN(ConfigurationSpecification,AddGroup "const"))
                                            .def("ConvertToVelocitySpecification",&PyConfigurationSpecification::ConvertToVelocitySpecification,DOXY_FN(ConfigurationSpecification,ConvertToVelocitySpecification))
-                                           .def("ConvertToDerivativeSpecification",&PyConfigurationSpecification::ConvertToDerivativeSpecification, DOXY_FN(ConfigurationSpecification, ConvertToDerivativeSpecification))
+                                           .def("ConvertToDerivativeSpecification",&PyConfigurationSpecification::ConvertToDerivativeSpecification, args("timederivative"), DOXY_FN(ConfigurationSpecification, ConvertToDerivativeSpecification))
                                            .def("GetTimeDerivativeSpecification",&PyConfigurationSpecification::GetTimeDerivativeSpecification,DOXY_FN(ConfigurationSpecification,GetTimeDerivativeSpecification))
 
                                            .def("ExtractTransform",&PyConfigurationSpecification::ExtractTransform,ExtractTransform_overloads(args("transform","data","body","timederivative"),DOXY_FN(ConfigurationSpecification,ExtractTransform)))
@@ -1206,7 +1215,8 @@ void init_openravepy_global()
     def("RaveSetDebugLevel",openravepy::pyRaveSetDebugLevel,args("level"), DOXY_FN1(RaveSetDebugLevel));
     def("RaveGetDebugLevel",OpenRAVE::RaveGetDebugLevel,DOXY_FN1(RaveGetDebugLevel));
     def("RaveSetDataAccess",openravepy::pyRaveSetDataAccess,args("accessoptions"), DOXY_FN1(RaveSetDataAccess));
-    def("RaveGetDataAccess",OpenRAVE::RaveGetDataAccess,DOXY_FN1(RaveGetDataAccess));
+    def("RaveGetDataAccess",OpenRAVE::RaveGetDataAccess, DOXY_FN1(RaveGetDataAccess));
+    def("RaveGetDefaultViewerType", OpenRAVE::RaveGetDefaultViewerType, DOXY_FN1(RaveGetDefaultViewerType));
     def("RaveFindLocalFile",OpenRAVE::RaveFindLocalFile,RaveFindLocalFile_overloads(args("filename","curdir"), DOXY_FN1(RaveFindLocalFile)));
     def("RaveInvertFileLookup",openravepy::pyRaveInvertFileLookup,args("filename"), DOXY_FN1(RaveInvertFileLookup));
     def("RaveGetHomeDirectory",OpenRAVE::RaveGetHomeDirectory,DOXY_FN1(RaveGetHomeDirectory));
@@ -1226,7 +1236,7 @@ void init_openravepy_global()
     def("RaveLoadPlugin",OpenRAVE::RaveLoadPlugin,args("filename"),DOXY_FN1(RaveLoadPlugins));
     def("RaveHasInterface",OpenRAVE::RaveHasInterface,args("type","name"),DOXY_FN1(RaveHasInterface));
     def("RaveGlobalState",OpenRAVE::RaveGlobalState,DOXY_FN1(RaveGlobalState));
-    def("RaveClone",openravepy::RaveClone,args("ref","cloningoptions"), DOXY_FN1(RaveClone));
+    def("RaveClone",openravepy::pyRaveClone,RaveClone_overloads(args("ref","cloningoptions", "cloneenv"), DOXY_FN1(RaveClone)));
     def("RaveGetIkTypeFromUniqueId",OpenRAVE::RaveGetIkTypeFromUniqueId,args("uniqueid"), DOXY_FN1(RaveGetIkTypeFromUniqueId));
     def("RaveGetIndexFromAffineDOF",OpenRAVE::RaveGetIndexFromAffineDOF, args("affinedofs","dof"), DOXY_FN1(RaveGetIndexFromAffineDOF));
     def("RaveGetAffineDOFFromIndex",OpenRAVE::RaveGetAffineDOFFromIndex, args("affinedofs","index"), DOXY_FN1(RaveGetAffineDOFFromIndex));
@@ -1247,8 +1257,8 @@ void init_openravepy_global()
     def("quatFromAxisAngle",openravepy::quatFromAxisAngle1, args("axisangle"), DOXY_FN1(quatFromAxisAngle "const RaveVector"));
     def("quatFromAxisAngle",openravepy::quatFromAxisAngle2, args("axis","angle"), DOXY_FN1(quatFromAxisAngle "const RaveVector; T"));
     def("quatFromRotationMatrix",openravepy::quatFromRotationMatrix, args("rotation"), DOXY_FN1(quatFromMatrix "const RaveTransform"));
-    def("InterpolateQuatSlerp",openravepy::InterpolateQuatSlerp, args("quat0","quat1","t"), DOXY_FN1(InterpolateQuatSlerp "const RaveVector; const RaveVector; T"));
-    def("InterpolateQuatSquad",openravepy::InterpolateQuatSquad, args("quat0","quat1","t"), DOXY_FN1(InterpolateQuatSquad "const RaveVector; const RaveVector; T"));
+    def("InterpolateQuatSlerp",openravepy::InterpolateQuatSlerp, InterpolateQuatSlerp_overloads(args("quat0","quat1","t","forceshortarc"), DOXY_FN1(InterpolateQuatSlerp "const RaveVector; const RaveVector; T")));
+    def("InterpolateQuatSquad",openravepy::InterpolateQuatSquad, InterpolateQuatSquad_overloads(args("quat0","quat1","quat2","quat3","t","forceshortarc"), DOXY_FN1(InterpolateQuatSquad)));
     def("quatSlerp",openravepy::InterpolateQuatSlerp, args("quat0","quat1","t"), DOXY_FN1(quatSlerp "const RaveVector; const RaveVector; T")); // deprecated
     def("axisAngleFromRotationMatrix",openravepy::axisAngleFromRotationMatrix, args("rotation"), DOXY_FN1(axisAngleFromMatrix "const RaveTransformMatrix"));
     def("axisAngleFromQuat",openravepy::axisAngleFromQuat, args("quat"), DOXY_FN1(axisAngleFromQuat "const RaveVector"));

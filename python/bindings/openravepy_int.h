@@ -52,8 +52,10 @@
 #include "bindings.h"
 #include "docstrings.h"
 
+#define _(msgid) OpenRAVE::RaveGetLocalizedTextForDomain("openrave", msgid)
+
 #define CHECK_POINTER(p) { \
-        if( !(p) ) { throw openrave_exception(boost::str(boost::format("[%s:%d]: invalid pointer")%__PRETTY_FUNCTION__%__LINE__)); } \
+        if( !(p) ) { throw openrave_exception(boost::str(boost::format(_("[%s:%d]: invalid pointer"))%__PRETTY_FUNCTION__%__LINE__)); } \
 }
 
 using namespace boost::python;
@@ -84,7 +86,8 @@ class PySpaceSamplerBase;
 class PyConfigurationSpecification;
 class PyIkParameterization;
 class PyXMLReadable;
-
+class PyCameraIntrinsics;
+    
 typedef boost::shared_ptr<PyInterfaceBase> PyInterfaceBasePtr;
 typedef boost::shared_ptr<PyInterfaceBase const> PyInterfaceBaseConstPtr;
 typedef boost::shared_ptr<PyKinBody> PyKinBodyPtr;
@@ -123,7 +126,8 @@ typedef boost::shared_ptr<PyConfigurationSpecification> PyConfigurationSpecifica
 typedef boost::shared_ptr<PyConfigurationSpecification const> PyConfigurationSpecificationConstPtr;
 typedef boost::shared_ptr<PyIkParameterization> PyIkParameterizationPtr;
 typedef boost::shared_ptr<PyXMLReadable> PyXMLReadablePtr;
-
+typedef boost::shared_ptr<PyCameraIntrinsics> PyCameraIntrinsicsPtr;
+    
 inline uint64_t GetMicroTime()
 {
 #ifdef _WIN32
@@ -234,7 +238,7 @@ inline RaveVector<T> ExtractVector34(const object& oraw,T fdefaultw)
     else if( n == 4 ) {
         return ExtractVector4Type<T>(oraw);
     }
-    throw openrave_exception("unexpected vector size");
+    throw openrave_exception(_("unexpected vector size"));
 }
 
 template <typename T>
@@ -242,7 +246,7 @@ inline RaveVector<T> ExtractVector(const object& oraw)
 {
     int n = len(oraw);
     if( n > 4 ) {
-        throw OPENRAVE_EXCEPTION_FORMAT("unexpected vector size %d",n,ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT(_("unexpected vector size %d"),n,ORE_InvalidArguments);
     }
     Vector v;
     for(int i = 0; i < n; ++i) {
@@ -432,7 +436,30 @@ public:
 class PySerializableData : public PyUserData
 {
 public:
+    class StringSerializableData : public SerializableData
+    {
+public:
+        StringSerializableData(const std::string& data) : _data(data) {
+        }
+
+        virtual void Serialize(std::ostream& O, int options=0) const {
+            O << _data;
+        }
+
+        virtual void Deserialize(std::istream& I) {
+            // need to read the entire input
+            stringbuf buf;
+            I.get(buf, 0);
+            _data = buf.str();
+        }
+
+        std::string _data;
+    };
+
     PySerializableData() {
+    }
+    PySerializableData(const std::string& data) {
+        _handle.reset(new StringSerializableData(data));
     }
     PySerializableData(SerializableDataPtr handle) : _handle(handle) {
     }
@@ -609,6 +636,7 @@ PyInterfaceBasePtr toPyIkSolver(IkSolverBasePtr, PyEnvironmentBasePtr);
 void init_openravepy_kinbody();
 KinBodyPtr GetKinBody(object);
 KinBodyPtr GetKinBody(PyKinBodyPtr);
+PyEnvironmentBasePtr GetPyEnvFromPyKinBody(object okinbody);
 PyInterfaceBasePtr toPyKinBody(KinBodyPtr, PyEnvironmentBasePtr);
 object toPyKinBody(KinBodyPtr, object opyenv);
 object toPyKinBodyLink(KinBody::LinkPtr plink, PyEnvironmentBasePtr);
@@ -628,6 +656,7 @@ PyInterfaceBasePtr toPyPhysicsEngine(PhysicsEngineBasePtr, PyEnvironmentBasePtr)
 void init_openravepy_planner();
 PlannerBasePtr GetPlanner(PyPlannerBasePtr);
 PyInterfaceBasePtr toPyPlanner(PlannerBasePtr, PyEnvironmentBasePtr);
+PlannerBase::PlannerParametersPtr GetPlannerParameters(object);
 PlannerBase::PlannerParametersConstPtr GetPlannerParametersConst(object);
 
 object toPyPlannerParameters(PlannerBase::PlannerParametersPtr params);
@@ -665,6 +694,9 @@ int pyGetIntFromPy(object olevel, int defaultvalue);
 PyConfigurationSpecificationPtr toPyConfigurationSpecification(const ConfigurationSpecification&);
 const ConfigurationSpecification& GetConfigurationSpecification(PyConfigurationSpecificationPtr);
 
+PyCameraIntrinsicsPtr toPyCameraIntrinsics(const geometry::RaveCameraIntrinsics<float>&);
+PyCameraIntrinsicsPtr toPyCameraIntrinsics(const geometry::RaveCameraIntrinsics<double>&);
+    
 PyInterfaceBasePtr RaveCreateInterface(PyEnvironmentBasePtr pyenv, InterfaceType type, const std::string& name);
 void init_openravepy_global();
 void InitPlanningUtils();

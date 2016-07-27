@@ -1086,7 +1086,7 @@ def test_ik():
     rawbasepos=ikmodel.manip.GetLocalToolTransform()[0:3,3]
     
     chaintree = solver.generateIkSolver(baselink=baselink,eelink=eelink,freeindices=freeindices,solvefn=solvefn,ikfastoptions=1)
-    code=ikmodel.ikfast.ikfast_generator_cpp.CodeGenerator().generate(chaintree)
+    code=ikmodel.ikfast.ikfast_generator_cpp.CodeGenerator(version=ikmodel.ikfast.__version__).generate(chaintree)
     open(sourcefilename,'w').write(code)
     
     #T0links.append(self.affineInverse(T1links.pop(-1)))
@@ -1102,7 +1102,7 @@ def test_ik():
     valsubs = []
     freevalsubs = []
     for var,value in izip(self._jointvars,jointvalues):
-        newsubs = [(var,value),(Symbol('c%s'%var.name),self.convertRealToRational(cos(value).evalf())),(Symbol('s%s'%var.name),self.convertRealToRational(sin(value).evalf())),(Symbol('t%s'%var.name),self.convertRealToRational(tan(value).evalf())),(Symbol('ht%s'%var.name),self.convertRealToRational(tan(value/2).evalf()))]
+        newsubs = [(var,Real(value)),(Symbol('c%s'%var.name),self.convertRealToRational(cos(value).evalf())),(Symbol('s%s'%var.name),self.convertRealToRational(sin(value).evalf())),(Symbol('t%s'%var.name),self.convertRealToRational(tan(value).evalf())),(Symbol('ht%s'%var.name),self.convertRealToRational(tan(value/2).evalf()))]
         valsubs += newsubs
         if not var in self._solvejointvars:
             freevalsubs += newsubs
@@ -1111,8 +1111,8 @@ def test_ik():
         psubs.append((self.Tee[i],self.convertRealToRational(self.Tfinal[i].subs(valsubs).evalf())))
     for s,v in self.ppsubs+self.npxyzsubs+self.rxpsubs:
         psubs.append((s,v.subs(psubs)))
-
-
+        
+        
     if len(self.globalsymbols) > 0:
         psubs += [(s,v.subs(psubs+valsubs)) for s,v in self.globalsymbols]    
     if len(raghavansolutiontree) > 0:

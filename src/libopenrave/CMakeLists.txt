@@ -21,15 +21,16 @@ include_directories(${FPARSER_INCLUDE_DIRS})
 add_library(libopenrave SHARED ${openrave_lib_SOURCES})
 add_dependencies(libopenrave interfacehashes_target openrave-md5)
 if( CRLIBM_FOUND )
-  add_dependencies(libopenrave check_libm_accuracy) # forces check to be run before libopenrave is compile
+  add_dependencies(libopenrave check_libm_accuracy-native) # forces check to be run before libopenrave is compile
 endif()
+
 set_target_properties(libopenrave PROPERTIES OUTPUT_NAME openrave${OPENRAVE_LIBRARY_SUFFIX}
                                   SOVERSION 0 # always have it 0 since we're including the soversion as part of the library name
                                   VERSION ${OPENRAVE_VERSION}
                                   CLEAN_DIRECT_OUTPUT 1
                                   COMPILE_FLAGS "${LIBOPENRAVE_COMPILE_FLAGS} ${FPARSER_CXX_FLAGS} -DOPENRAVE_DLL_EXPORTS -DOPENRAVE_DLL"
                                   LINK_FLAGS "${LIBOPENRAVE_LINK_FLAGS} ${FPARSER_LINK_FLAGS}")
-target_link_libraries(libopenrave ${openrave_libraries} ${FPARSER_LIBRARIES})
+target_link_libraries(libopenrave ${openrave_libraries} ${FPARSER_LIBRARIES} ${Intl_LIBRARIES})
 if( MSVC )
   install(TARGETS libopenrave EXPORT openrave-targets RUNTIME DESTINATION bin COMPONENT ${COMPONENT_PREFIX}base LIBRARY DESTINATION bin COMPONENT ${COMPONENT_PREFIX}base ARCHIVE DESTINATION lib${LIB_SUFFIX} COMPONENT ${COMPONENT_PREFIX}base)
 else()
@@ -75,7 +76,7 @@ if( OPT_STATIC )
   target_link_libraries(libopenrave_static ${openrave_libraries} ${FPARSER_LIBRARIES})
   add_dependencies(libopenrave_static interfacehashes_target openrave-md5)
   if( CRLIBM_FOUND )
-    add_dependencies(libopenrave_static check_libm_accuracy) # forces check to be run before libopenrave is compilde
+    add_dependencies(libopenrave_static check_libm_accuracy-native) # forces check to be run before libopenrave is compilde
   endif()
   install(TARGETS libopenrave_static EXPORT openrave-targets DESTINATION lib${LIB_SUFFIX} COMPONENT ${COMPONENT_PREFIX}dev)
 endif()

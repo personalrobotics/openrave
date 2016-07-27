@@ -26,6 +26,13 @@ public:
     virtual ~GenericCollisionChecker() {
     }
 
+    void Clone(InterfaceBaseConstPtr preference, int cloningoptions)
+    {
+        CollisionCheckerBase::Clone(preference, cloningoptions);
+        boost::shared_ptr<GenericCollisionChecker const > r = boost::dynamic_pointer_cast<GenericCollisionChecker const>(preference);
+        _geometrygroup = r->_geometrygroup;
+    }
+
     virtual bool InitEnvironment() {
         return true;
     }
@@ -102,8 +109,15 @@ public:
         _geometrygroup = groupname;
     }
 
-    virtual const std::string& GetGeometryGroup()
+    virtual const std::string& GetGeometryGroup() const
     {
+        return _geometrygroup;
+    }
+
+    virtual void SetBodyGeometryGroup(KinBodyConstPtr pbody, const std::string& groupname) {
+    }
+
+    virtual const std::string& GetBodyGeometryGroup(KinBodyConstPtr pbody) const {
         return _geometrygroup;
     }
 

@@ -14,8 +14,7 @@
 """Misc openravepy functions. Need to explicitly import to use them.
 """
 from __future__ import with_statement # for python 2.5
-import openravepy_int
-import openravepy_ext
+from . import openravepy_int, openravepy_ext
 import os.path
 from sys import platform as sysplatformname
 from sys import stdout
@@ -126,6 +125,7 @@ class OpenRAVEGlobalArguments:
     @staticmethod
     def addOptions(parser,testmode=True):
         from optparse import OptionGroup
+        from os import environ
         ogroup = OptionGroup(parser,"OpenRAVE Environment Options")
         ogroup.add_option('--loadplugin', action="append",type='string',dest='_loadplugins',default=[],
                           help='List all plugins and the interfaces they provide.')
@@ -134,7 +134,7 @@ class OpenRAVEGlobalArguments:
         ogroup.add_option('--physics', action="store",type='string',dest='_physics',default=None,
                           help='physics engine to use (default=%default)')
         ogroup.add_option('--viewer', action="store",type='string',dest='_viewer',default=None,
-                          help='viewer to use (default=qtcoin)' )
+                          help='viewer to use (default=%s)'%environ.get('OPENRAVE_DEFAULT_VIEWER', openravepy_int.RaveGetDefaultViewerType()) )
         ogroup.add_option('--server', action="store",type='string',dest='_server',default=None,
                           help='server to use (default=None).')
         ogroup.add_option('--serverport', action="store",type='int',dest='_serverport',default=4765,
@@ -195,7 +195,8 @@ class OpenRAVEGlobalArguments:
                 if len(options._viewer) > 0:
                     viewername=options._viewer
             elif defaultviewer:
-                viewername='qtcoin'
+                from os import environ
+                viewername=environ.get('OPENRAVE_DEFAULT_VIEWER', openravepy_int.RaveGetDefaultViewerType())
             if returnviewer:
                 return viewername
             elif viewername is not None:
@@ -277,13 +278,14 @@ def ComputeGeodesicSphereMesh(radius=1.0,level=2):
         triindices = newindices
     return radius*numpy.array(vertices),triindices
 
-def DrawAxes(env,target,dist=1.0,linewidth=1,coloradd=None):
+def DrawAxes(env,target,dist=1.0,linewidth=1,colormode='rgb',coloradd=None):
     """draws xyz coordinate system around target.
 
     :param env: Environment
     :param target: can be a 7 element pose, 4x4 matrix, or the name of a kinbody in the environment
     :param dist: how far the lines extend from the origin
     :param linewidth: how thick the line is rendered in pixels
+    :param colormode: optionally override default color mode of rgb to cmy
     :param coloradd: an optional 3-element vector for 
     """
     if isinstance(target,basestring):
@@ -292,7 +294,10 @@ def DrawAxes(env,target,dist=1.0,linewidth=1,coloradd=None):
         T = openravepy_int.matrixFromPose(target)
     else:
         T = numpy.array(target)
-    colors=numpy.array([[1,0,0],[1,0,0],[0,1,0],[0,1,0],[0,0,1],[0,0,1]])
+    if colormode == 'cmy':
+        colors = numpy.array([[0,1,1],[0,1,1],[1,0,1],[1,0,1],[1,1,0],[1,1,0]])
+    else:
+        colors = numpy.array([[1,0,0],[1,0,0],[0,1,0],[0,1,0],[0,0,1],[0,0,1]])
     if coloradd is not None:
         colors = numpy.minimum(1.0, numpy.maximum(0.0, colors + numpy.tile(coloradd,(len(colors),1))))
     return env.drawlinelist(numpy.array([T[0:3,3],T[0:3,3]+T[0:3,0]*dist,T[0:3,3],T[0:3,3]+T[0:3,1]*dist,T[0:3,3],T[0:3,3]+T[0:3,2]*dist]),linewidth,colors=colors)
@@ -326,7 +331,62 @@ def DrawIkparam(env,ikparam,dist=1.0,linewidth=1,coloradd=None):
     
     else:
         raise NotImplemented('iktype %s'%str(ikparam.GetType()))
+
+def DrawIkparam2(env,ikparam,dist=1.0,linewidth=1,coloradd=None):
+    """draws an IkParameterization
+
+    """
+    if ikparam.GetType() == openravepy_int.IkParameterizationType.Transform6D:
+        return [DrawAxes(env,ikparam.GetTransform6DPose(),dist,linewidth,coloradd)]
     
+    elif ikparam.GetType() == openravepy_int.IkParameterizationType.TranslationDirection5D:
+        ray = ikparam.GetTranslationDirection5D()
+        colors=numpy.array([[0,0,0],[1,0,0]])
+        if coloradd is not None:
+            colors = numpy.minimum(1.0, numpy.maximum(0.0, colors + numpy.tile(coloradd,(len(colors),1))))
+
+        # have to draw the arrow
+        dirangle = numpy.pi/6
+        arrowc = numpy.cos(dirangle)*dist*0.1
+        arrows = numpy.sin(dirangle)*dist*0.1
+        arrowdirs = numpy.array([[0, 0, 0], [0, 0, dist],
+                                 [0, 0, dist], [arrows, 0, dist-arrowc],
+                                 [0, 0, dist], [-arrows, 0, dist-arrowc],
+                                 [0, 0, dist], [0, arrows, dist-arrowc],
+                                 [0, 0, dist], [0, -arrows, dist-arrowc]])
+        q = openravepy_int.quatRotateDirection([0,0,1], ray.dir())
+        realarrowlines = openravepy_ext.quatRotateArrayT(q, arrowdirs) + numpy.tile(ray.pos(), (len(arrowdirs),1))
+        return [env.drawlinelist(realarrowlines[:2,:].flatten(),linewidth,colors=colors), env.drawlinelist(realarrowlines[2:].flatten(),linewidth,colors=colors[1])] + [env.plot3(ray.pos(), 4*linewidth, colors=[0.5,0,0])]
+    
+    elif ikparam.GetType() == openravepy_int.IkParameterizationType.Translation3D:
+        if coloradd is not None:
+            colors = numpy.array([coloradd])
+        else:
+            colors=numpy.array([[0,0,0]])
+        return [env.plot3(ikparam.GetTranslation3D(),linewidth,colors=colors)]
+    
+    elif ikparam.GetType() == openravepy_int.IkParameterizationType.TranslationXAxisAngleZNorm4D:
+        pos,angle = ikparam.GetTranslationXAxisAngleZNorm4D()
+        T = openravepy_int.matrixFromAxisAngle([0,0,angle])
+        T[0:3,3] = pos
+        return [DrawAxes(env,T,dist,linewidth,coloradd)]
+    
+    elif ikparam.GetType() == openravepy_int.IkParameterizationType.TranslationYAxisAngleXNorm4D:
+        pos,angle = ikparam.GetTranslationYAxisAngleXNorm4D()
+        T = numpy.dot([[1,0,0,0],[0,0,1,0],[0,-1,0,0],[0,0,0,1]], openravepy_int.matrixFromAxisAngle([angle, 0,0]))
+        T[0:3,3] = pos
+        return [DrawAxes(env,T,dist,linewidth,coloradd)]
+    
+    else:
+        raise NotImplemented('iktype %s'%str(ikparam.GetType()))
+
+def DrawCircle(env, center, normal, radius, linewidth=1, colors=None):
+    angles = numpy.arange(0, 2*numpy.pi+0.1, 0.1)
+    R = openravepy_int.matrixFromQuat(openravepy_int.quatRotateDirection([0,0,1],normal))
+    right = R[0:3,0]*radius
+    up = R[0:3,1]*radius
+    return env.drawlinestrip(c_[numpy.dot(numpy.transpose([numpy.cos(angles)]), [right]) + numpy.dot(numpy.transpose([numpy.sin(angles)]), [up]) + numpy.tile(center, (len(angles),1))], linewidth, colors=colors)
+
 def ComputeBoxMesh(extents):
     """Computes a box mesh"""
     indices = numpy.reshape([0, 1, 2, 1, 2, 3, 4, 5, 6, 5, 6, 7, 0, 1, 4, 1, 4, 5, 2, 3, 6, 3, 6, 7, 0, 2, 4, 2, 4, 6, 1, 3, 5,3, 5, 7],(12,3))
@@ -356,9 +416,13 @@ def ComputeCylinderYMesh(radius,height,angledelta=0.1):
     return vertices,numpy.array(indices)
 
 
-def TSP(solutions,distfn):
+def TSP(solutions,distfn=None):
     """solution to travelling salesman problem. orders the set of solutions such that visiting them one after another is fast.
     """
+    if distfn is None:
+        # create a dummy distance fn
+        distfn = lambda x,y: sum((x-y)**2)
+    
     newsolutions = numpy.array(solutions)
     for i in range(newsolutions.shape[0]-2):
         n = newsolutions.shape[0]-i-1

@@ -141,14 +141,14 @@ int& GetXMLErrorCount()
 class aiSceneManaged
 {
 public:
-    aiSceneManaged(const std::string& dataorfilename, bool bIsFilename=true, unsigned int flags = aiProcess_JoinIdenticalVertices|aiProcess_Triangulate|aiProcess_FindDegenerates|aiProcess_PreTransformVertices|aiProcess_SortByPType) {
+    aiSceneManaged(const std::string& dataorfilename, bool bIsFilename=true, const std::string& formathint=std::string(), unsigned int flags = aiProcess_JoinIdenticalVertices|aiProcess_Triangulate|aiProcess_FindDegenerates|aiProcess_PreTransformVertices|aiProcess_SortByPType) {
         boost::call_once(__SetAssimpLog,__onceSetAssimpLog);
         _importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_POINT|aiPrimitiveType_LINE);
         if( bIsFilename ) {
             _scene = _importer.ReadFile(dataorfilename.c_str(),flags);
         }
         else {
-            _scene = _importer.ReadFileFromMemory(dataorfilename.c_str(),dataorfilename.size(), flags);
+            _scene = _importer.ReadFileFromMemory(dataorfilename.c_str(),dataorfilename.size(), flags, formathint.c_str());
         }
         if( _scene == NULL ) {
             RAVELOG_VERBOSE("assimp error: %s\n",_importer.GetErrorString());
@@ -229,7 +229,7 @@ static bool _AssimpCreateTriMesh(const aiScene* scene, aiNode* node, const Vecto
 
 #endif
 
-bool CreateTriMeshData(EnvironmentBasePtr penv, const std::string& filename, const Vector& vscale, TriMesh& trimesh, RaveVector<float>& diffuseColor, RaveVector<float>& ambientColor, float& ftransparency)
+bool CreateTriMeshFromFile(EnvironmentBasePtr penv, const std::string& filename, const Vector& vscale, TriMesh& trimesh, RaveVector<float>& diffuseColor, RaveVector<float>& ambientColor, float& ftransparency)
 {
     string extension;
     if( filename.find_last_of('.') != string::npos ) {
@@ -272,7 +272,7 @@ bool CreateTriMeshData(EnvironmentBasePtr penv, const std::string& filename, con
                     f.get(buf, 0);
 
                     string newdata = buf.str();
-                    aiSceneManaged scene(newdata, false);
+                    aiSceneManaged scene(newdata, false, extension);
                     if( !!scene._scene && !!scene._scene->mRootNode && !!scene._scene->HasMeshes() ) {
                         if( _AssimpCreateTriMesh(scene._scene,scene._scene->mRootNode, vscale, trimesh, diffuseColor, ambientColor, ftransparency) ) {
                             return true;
@@ -319,6 +319,19 @@ bool CreateTriMeshData(EnvironmentBasePtr penv, const std::string& filename, con
     return false;
 }
 
+bool CreateTriMeshFromData(const std::string& data, const std::string& formathint, const Vector& vscale, TriMesh& trimesh, RaveVector<float>& diffuseColor, RaveVector<float>& ambientColor, float& ftransparency)
+{
+#ifdef OPENRAVE_ASSIMP
+    aiSceneManaged scene(data, false, formathint);
+    if( !!scene._scene && !!scene._scene->mRootNode && !!scene._scene->HasMeshes() ) {
+        if( _AssimpCreateTriMesh(scene._scene,scene._scene->mRootNode, vscale, trimesh, diffuseColor, ambientColor, ftransparency) ) {
+            return true;
+        }
+    }
+#endif
+
+    return false;
+}
 
 struct XMLREADERDATA
 {
@@ -775,7 +788,7 @@ public:
         g._vDiffuseColor=Vector(1,0.5f,0.5f,1);
         g._vAmbientColor=Vector(0.1,0.0f,0.0f,0);
         g._vRenderScale = vscale;
-        if( !CreateTriMeshData(penv,filename,vscale,g._meshcollision,g._vDiffuseColor,g._vAmbientColor,g._fTransparency) ) {
+        if( !CreateTriMeshFromFile(penv,filename,vscale,g._meshcollision,g._vDiffuseColor,g._vAmbientColor,g._fTransparency) ) {
             return false;
         }
         return true;
@@ -1122,6 +1135,9 @@ public:
                     case GT_Box:
                         mass = MASS::GetBoxMassD((*itgeom)->GetBoxExtents(), Vector(), _fMassDensity);
                         break;
+                    case GT_Container:
+                        mass = MASS::GetBoxMassD(0.5*(*itgeom)->GetContainerOuterExtents(), Vector(), _fMassDensity);
+                        break;
                     case GT_Cylinder:
                         mass = MASS::GetCylinderMassD((*itgeom)->GetCylinderRadius(), (*itgeom)->GetCylinderHeight(), Vector(), _fMassDensity);
                         break;
@@ -1143,6 +1159,9 @@ public:
                         break;
                     case GT_Box:
                         mass = MASS::GetBoxMassD((*itgeom)->GetBoxExtents(), Vector(), 1000);
+                        break;
+                    case GT_Container:
+                        mass = MASS::GetBoxMassD(0.5*(*itgeom)->GetContainerOuterExtents(), Vector(), 1000);
                         break;
                     case GT_Cylinder:
                         mass = MASS::GetCylinderMassD((*itgeom)->GetCylinderRadius(), (*itgeom)->GetCylinderHeight(), Vector(), 1000);
@@ -1511,7 +1530,7 @@ public:
         }
         else if((xmlname == "limits")||(xmlname == "limitsrad")||(xmlname == "limitsdeg")) {
             if( _bNegateJoint ) {
-                throw openrave_exception("cannot specify <limits> with <lostop> and <histop>, choose one");
+                throw openrave_exception(_("cannot specify <limits> with <lostop> and <histop>, choose one"));
             }
             dReal fmult = xmlname == "limitsdeg" ? fRatio : dReal(1.0);
             vector<dReal> values = vector<dReal>((istream_iterator<dReal>(_ss)), istream_iterator<dReal>());
@@ -1650,7 +1669,7 @@ public:
                 }
                 break;
             default:
-                throw openrave_exception(str(boost::format("bad joint type: 0x%x")%_pjoint->_info._type));
+                throw openrave_exception(str(boost::format(_("bad joint type: 0x%x"))%_pjoint->_info._type));
                 break;
             }
         }
@@ -2128,7 +2147,7 @@ public:
             if( _pcurreader->endElement(xmlname) ) {
                 if( xmlname == "body" ) {
                     if( !_plink )
-                        throw openrave_exception("link should be valid");
+                        throw openrave_exception(_("link should be valid"));
 
                     if( _plink->_index < 0 ) {
                         // not in array yet
@@ -2665,7 +2684,7 @@ public:
             }
         }
 
-        _psensor->_name = name;
+        _psensor->_info._name = name;
         _probot = _psensor->GetRobot();
     }
 
@@ -2734,24 +2753,24 @@ public:
         else if( xmlname == "translation" ) {
             Vector v;
             _ss >> v.x >> v.y >> v.z;
-            _psensor->trelative.trans += v*_vScaleGeometry;
+            _psensor->_info._trelative.trans += v*_vScaleGeometry;
         }
         else if( xmlname == "quat" ) {
             Transform tnew;
             _ss >> tnew.rot.x >> tnew.rot.y >> tnew.rot.z >> tnew.rot.w;
             tnew.rot.normalize4();
-            _psensor->trelative.rot = (tnew*_psensor->trelative).rot;
+            _psensor->_info._trelative.rot = (tnew*_psensor->_info._trelative).rot;
         }
         else if( xmlname == "rotationaxis" ) {
             Vector vaxis; dReal fangle=0;
             _ss >> vaxis.x >> vaxis.y >> vaxis.z >> fangle;
             Transform tnew; tnew.rot = quatFromAxisAngle(vaxis, fangle * PI / 180.0f);
-            _psensor->trelative.rot = (tnew*_psensor->trelative).rot;
+            _psensor->_info._trelative.rot = (tnew*_psensor->_info._trelative).rot;
         }
         else if( xmlname == "rotationmat" ) {
             TransformMatrix tnew;
             _ss >> tnew.m[0] >> tnew.m[1] >> tnew.m[2] >> tnew.m[4] >> tnew.m[5] >> tnew.m[6] >> tnew.m[8] >> tnew.m[9] >> tnew.m[10];
-            _psensor->trelative.rot = (Transform(tnew)*_psensor->trelative).rot;
+            _psensor->_info._trelative.rot = (Transform(tnew)*_psensor->_info._trelative).rot;
         }
 
         if( xmlname !=_processingtag )
@@ -3005,7 +3024,7 @@ public:
                 }
                 FOREACH(itsensor, _probot->GetAttachedSensors()) {
                     if( _setInitialSensors.find(*itsensor) == _setInitialSensors.end() ) {
-                        (*itsensor)->_name = _prefix + (*itsensor)->_name;
+                        (*itsensor)->_info._name = _prefix + (*itsensor)->_info._name;
                     }
                 }
                 FOREACH(itmanip,_probot->GetManipulators()) {
@@ -3226,7 +3245,7 @@ public:
     EnvironmentXMLReader(EnvironmentBasePtr penv, const AttributesList &atts, bool bInEnvironment) : _penv(penv), _bInEnvironment(bInEnvironment)
     {
         if( !_penv ) {
-            throw openrave_exception("need valid environment",ORE_InvalidArguments);
+            throw openrave_exception(_("need valid environment"),ORE_InvalidArguments);
         }
         FOREACHC(itatt,atts) {
             if( itatt->first == "file" ) {
@@ -3265,7 +3284,7 @@ public:
         FOREACHC(itname,RaveGetInterfaceNamesMap()) {
             if( xmlname == itname->second ) {
                 if( !!_pinterface ) {
-                    throw openrave_exception("interface should not be initialized");
+                    throw openrave_exception(_("interface should not be initialized"));
                 }
                 _pcurreader = CreateInterfaceReader(_penv,itname->first,_pinterface,"",atts);
                 if( !_pcurreader ) {
@@ -3281,7 +3300,7 @@ public:
             return PE_Support;
         }
 
-        static boost::array<string, 8> tags = { { "bkgndcolor", "camrotaxis", "camrotationaxis", "camrotmat", "camtrans", "camfocal", "bkgndcolor", "plugin"}};
+        static boost::array<string, 9> tags = { { "bkgndcolor", "camrotaxis", "camrotationaxis", "camrotmat", "camtrans", "camfocal", "bkgndcolor", "plugin", "unit"}};
         if( find(tags.begin(),tags.end(),xmlname) != tags.end() ) {
             _processingtag = xmlname;
             return PE_Support;
@@ -3408,6 +3427,11 @@ public:
             _ss >> pluginname;
             RaveLoadPlugin(pluginname);
         }
+        else if(xmlname == "unit"){
+            std::pair<std::string, dReal> unit;
+            _ss >> unit.first >> unit.second;
+            _penv->SetUnit(unit);
+        }
 
         if( xmlname !=_processingtag ) {
             RAVELOG_WARN(str(boost::format("invalid tag %s!=%s\n")%xmlname%_processingtag));
@@ -3464,7 +3488,7 @@ BaseXMLReaderPtr CreateInterfaceReader(EnvironmentBasePtr penv, InterfaceType ty
     case PT_SpaceSampler: return InterfaceXMLReaderPtr(new DummyInterfaceXMLReader<PT_SpaceSampler>(penv,pinterface,xmltag,atts));
     }
 
-    throw openrave_exception(str(boost::format("could not create interface of type %d")%type),ORE_InvalidArguments);
+    throw openrave_exception(str(boost::format(_("could not create interface of type %d"))%type),ORE_InvalidArguments);
 }
 
 class GlobalInterfaceXMLReader : public StreamXMLReader
@@ -3494,17 +3518,17 @@ public:
         FOREACHC(itname,RaveGetInterfaceNamesMap()) {
             if( xmlname == itname->second ) {
                 if( !!_pinterface ) {
-                    throw openrave_exception("interface should not be initialized");
+                    throw openrave_exception(_("interface should not be initialized"));
                 }
                 _pcurreader = CreateInterfaceReader(_penv,itname->first,_pinterface,"",newatts);
                 if( !_pinterface ) {
-                    throw openrave_exception(str(boost::format("failed to create interface %s")%itname->second));
+                    throw openrave_exception(str(boost::format(_("failed to create interface %s"))%itname->second));
                 }
                 return PE_Support;
             }
         }
 
-        throw openrave_exception(str(boost::format("invalid interface tag %s")%xmlname));
+        throw openrave_exception(str(boost::format(_("invalid interface tag %s"))%xmlname));
     }
 
     virtual bool endElement(const std::string& xmlname)

@@ -21,6 +21,8 @@
 
 #include <boost/pool/pool.hpp>
 
+#define _(msgid) OpenRAVE::RaveGetLocalizedTextForDomain("openrave_plugins_rplanners", msgid)
+
 enum ExtendType {
     ET_Failed=0,
     ET_Sucess=1,
@@ -341,7 +343,7 @@ public:
                 }
                 return ET_Failed;
             }
-            if( !params->_neighstatefn(_vNewConfig,_vDeltaConfig,_fromgoal) ) {
+            if( !params->_neighstatefn(_vNewConfig,_vDeltaConfig,_fromgoal ? NSO_GoalToInitial : 0) ) {
                 if(bHasAdded) {
                     return ET_Sucess;
                 }
@@ -373,7 +375,7 @@ public:
                 lastnode = pnode;
                 bHasAdded = true;
                 if( bOneStep ) {
-                    return ET_Connected;
+                    return ET_Connected; // is it ok to return ET_Connected rather than ET_Sucess. BasicRRT relies on ET_Connected
                 }
             }
             _vCurConfig.swap(_vNewConfig);
@@ -615,7 +617,7 @@ private:
                 // only take the children whose distances are within the bound
                 FOREACHC(itchild, itcurrentnode->first->_vchildren) {
                     dReal curdist = _ComputeDistance((*itchild)->q, vquerystate);
-                    if( curdist < bestnode.second && bestnode.first->_usenn) {
+                    if( !bestnode.first || (curdist < bestnode.second && bestnode.first->_usenn)) {
                         bestnode = make_pair(*itchild, curdist);
                     }
                     _vNextLevelNodes.push_back(make_pair(*itchild, curdist));

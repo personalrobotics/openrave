@@ -50,6 +50,23 @@ class RunCollision(EnvironmentSetup):
                 assert(check==robot.CheckSelfCollision())
                 env.Remove(robot)
 
+    def test_collisioncaching2(self):
+        filenames = ['robots/barrettwam.robot.xml']
+        env=self.env
+        for filename in filenames:
+            env.Reset()
+            robot=env.ReadRobotURI(filename)
+            for i in range(4):
+                env.Add(robot)
+                lower,upper = robot.GetDOFLimits()
+                for i in range(4):
+                    v = random.rand()*(upper-lower)+lower
+                    robot.SetDOFValues(v)
+                    check=robot.CheckSelfCollision()
+                    robot.SetDOFValues(v)
+                    assert(check==robot.CheckSelfCollision())
+                env.Remove(robot)
+
     def test_selfcollision(self):
         with self.env:
             self.LoadEnv('data/lab1.env.xml')
@@ -64,6 +81,15 @@ class RunCollision(EnvironmentSetup):
             assert(not robot.CheckSelfCollision(report))
             assert(not target1.CheckSelfCollision())
             assert(self.env.CheckCollision(target1,report))
+
+    def test_attachedbodiescollision(self):
+        with self.env:
+            self.loadEnv('data/lab1.env.xml')
+            robot = env.GetRobot('BarrettWAM')
+            link1 = robot.GetLink('wam5')
+            link2 = robot.GetLink('wam6')
+            assert(env.CheckCollision(link1, link2))
+
 
     def test_selfcollision_joinxml(self):
         testrobot_xml="""<Robot>
@@ -221,12 +247,36 @@ class RunCollision(EnvironmentSetup):
             assert(abs(report.minDistance-0.29193971893003506) < 0.01 )
             assert(report.plink1 == robot.GetLink('wam1'))
             assert(report.plink2 == env.GetKinBody('pole').GetLinks()[0])
+
+    def test_multiplecontacts(self):
+        env=self.env
+        env.GetCollisionChecker().SetCollisionOptions(CollisionOptions.AllLinkCollisions)
+        self.LoadEnv('data/lab1.env.xml')
+        robot = env.GetRobots()[0]
+        manip = robot.GetManipulators()[0]
+        body1 = env.GetKinBody('mug1')
+        body2 = env.GetKinBody('mug2')
+
+        body1.SetTransform(manip.GetEndEffector().GetTransform())
+        body2.SetTransform(manip.GetEndEffector().GetTransform())
         
+        report = CollisionReport()
+        env.CheckCollision(robot,report=report)
+
+        assert(len(report.vLinkColliding)==8)
+        
+        manip.CheckEndEffectorCollision(report)
+        assert(len(report.vLinkColliding)==4)
+
 #generate_classes(RunCollision, globals(), [('ode','ode'),('bullet','bullet')])
 
 class test_ode(RunCollision):
     def __init__(self):
         RunCollision.__init__(self, 'ode')
+
+class test_fcl(RunCollision):
+    def __init__(self):
+        RunCollision.__init__(self, 'fcl_')
 
 # class test_bullet(RunCollision):
 #     def __init__(self):

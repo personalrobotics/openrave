@@ -32,9 +32,9 @@ public:
         _vXMLParameters.push_back("expectedsize");
     }
 
-    dReal _fExploreProb;
-    int _nExpectedDataSize;
-
+    dReal _fExploreProb; ///< explore close to the neighbors already added
+    int _nExpectedDataSize; ///< the expected number of nodes of the RRT tree to expand to before returning a solution. This allows the RRT tree to build up 
+    
 protected:
     bool _bProcessingExploration;
     // save the extra data to XML
@@ -88,6 +88,9 @@ protected:
         return PlannerParameters::endElement(name);
     }
 };
+
+typedef boost::shared_ptr<ExplorationParameters> ExplorationParametersPtr;
+typedef boost::shared_ptr<ExplorationParameters const> ExplorationParametersConstPtr;
 
 class OPENRAVE_API RAStarParameters : public PlannerBase::PlannerParameters
 {
@@ -534,22 +537,34 @@ typedef boost::shared_ptr<TrajectoryTimingParameters const> TrajectoryTimingPara
 class OPENRAVE_API ConstraintTrajectoryTimingParameters : public TrajectoryTimingParameters
 {
 public:
-    ConstraintTrajectoryTimingParameters() : TrajectoryTimingParameters(), maxlinkspeed(0), maxlinkaccel(0), maxmanipspeed(0), maxmanipaccel(0), mingripperdistance(0), velocitydistancethresh(0), maxmergeiterations(1000), minswitchtime(0.2),nshortcutcycles(1), _bCProcessing(false) {
+    ConstraintTrajectoryTimingParameters() : TrajectoryTimingParameters(), maxlinkspeed(0), maxlinkaccel(0), maxmanipspeed(0), maxmanipaccel(0), vConstraintManipDir(0,0,1), vConstraintGlobalDir(0,0,1), fCosManipAngleThresh(-1), mingripperdistance(0), velocitydistancethresh(0), maxmergeiterations(1000), minswitchtime(0.2),nshortcutcycles(1), fSearchVelAccelMult(0.8), _bCProcessing(false) {
         _vXMLParameters.push_back("maxlinkspeed");
         _vXMLParameters.push_back("maxlinkaccel");
+        _vXMLParameters.push_back("manipname");
         _vXMLParameters.push_back("maxmanipspeed");
         _vXMLParameters.push_back("maxmanipaccel");
+        _vXMLParameters.push_back("constraintmanipdir");
+        _vXMLParameters.push_back("constraintglobaldir");
+        _vXMLParameters.push_back("cosmanipanglethresh");
         _vXMLParameters.push_back("mingripperdistance");
         _vXMLParameters.push_back("velocitydistancethresh");
         _vXMLParameters.push_back("maxmergeiterations");
         _vXMLParameters.push_back("minswitchtime");
         _vXMLParameters.push_back("nshortcutcycles");
+        _vXMLParameters.push_back("searchvelaccelmult");
     }
 
     dReal maxlinkspeed; ///< max speed in m/s that any point on any link goes. 0 means no speed limit
     dReal maxlinkaccel; ///< max accel in m/s^2 that any point on the link goes. Gravity is always included in the acceleration computations. 0 means no accel limit
+
+    std::string manipname; ///< the manip name to constrain the speed/accel of a manipulator to.
     dReal maxmanipspeed; ///< if non-zero then the timer shoulld consdier the max speed limit (m/s) of the active manipulators of the selected robots in the configuration space. 0 means no speed limit
     dReal maxmanipaccel; ///< if non-zero then the timer shoulld consdier the max acceleration limit (m/s^2) of the active manipulators of the selected robots in the configuration space. Gravity is always included in the acceleration computations. 0 means no accel limit
+
+    Vector vConstraintManipDir, vConstraintGlobalDir; /// threshold the dot product between a direction on the manipulator and in the global world coordinate system. Use manipname
+    dReal fCosManipAngleThresh; ///< cos of the angle threshold between vConstraintManipDir and vConstraintGlobalDir. dot(manipdir, manipdir) > cosmanipanglethresh. By default it is -1
+    
+
     dReal mingripperdistance; ///< minimum distance of the hand (manipulator grippers) to any object. 0 means disabled.
     dReal velocitydistancethresh; /// threshold for dot(Direction,Velocity)/MinDistance where Direction is between the closest contact points. 0 if disabled.
 
@@ -558,6 +573,7 @@ public:
     dReal minswitchtime; ///< the minimum time between switching accelerations of any joint (waypoints).
     int nshortcutcycles; ///< number of times the shortcut cycle is repeted.
 
+    dReal fSearchVelAccelMult; ///< a number in [0.0001,0.99999] that is the multipler of the velocity/acceleration limits when time-based constraints are invalidated (manip speed and/or dynamics). The closer to 1 it is, the more optimal the trajectory will be, but it will take more time to compute. A value around 0.5-0.8 is best.
 
 protected:
     bool _bCProcessing;
@@ -568,13 +584,18 @@ protected:
         }
         O << "<maxlinkspeed>" << maxlinkspeed << "</maxlinkspeed>" << std::endl;
         O << "<maxlinkaccel>" << maxlinkaccel << "</maxlinkaccel>" << std::endl;
+        O << "<manipname>" << manipname << "</manipname>" << std::endl;
         O << "<maxmanipspeed>" << maxmanipspeed << "</maxmanipspeed>" << std::endl;
         O << "<maxmanipaccel>" << maxmanipaccel << "</maxmanipaccel>" << std::endl;
+        O << "<constraintmanipdir>" << vConstraintManipDir << "</constraintmanipdir>" << std::endl;
+        O << "<constraintglobaldir>" << vConstraintGlobalDir << "</constraintglobaldir>" << std::endl;
+        O << "<cosmanipanglethresh>" << fCosManipAngleThresh << "</cosmanipanglethresh>" << std::endl;
         O << "<mingripperdistance>" << mingripperdistance << "</mingripperdistance>" << std::endl;
         O << "<velocitydistancethresh>" << velocitydistancethresh << "</velocitydistancethresh>" << std::endl;
         O << "<maxmergeiterations>" << maxmergeiterations << "</maxmergeiterations>" << std::endl;
         O << "<minswitchtime>" << minswitchtime << "</minswitchtime>" << std::endl;
         O << "<nshortcutcycles>" << nshortcutcycles << "</nshortcutcycles>" << std::endl;
+        O << "<searchvelaccelmult>" << fSearchVelAccelMult << "</searchvelaccelmult>" << std::endl;
         if( !(options & 1) ) {
             O << _sExtraParameters << std::endl;
         }
@@ -592,7 +613,7 @@ protected:
         case PE_Support: return PE_Support;
         case PE_Ignore: return PE_Ignore;
         }
-        _bCProcessing = name=="maxlinkspeed" || name =="maxlinkaccel" || name=="maxmanipspeed" || name =="maxmanipaccel" || name=="mingripperdistance" || name=="velocitydistancethresh" || name=="maxmergeiterations" || name=="minswitchtime"|| name=="nshortcutcycles";
+        _bCProcessing = name=="maxlinkspeed" || name =="maxlinkaccel" || name=="manipname" || name=="maxmanipspeed" || name =="maxmanipaccel" || name=="mingripperdistance" || name=="velocitydistancethresh" || name=="maxmergeiterations" || name=="minswitchtime"|| name=="nshortcutcycles" || name=="constraintmanipdir" || name=="constraintglobaldir" || name=="cosmanipanglethresh" || name=="searchvelaccelmult";
         return _bCProcessing ? PE_Support : PE_Pass;
     }
 
@@ -604,6 +625,9 @@ protected:
             }
             else if( name == "maxlinkaccel") {
                 _ss >> maxlinkaccel;
+            }
+            else if( name == "manipname" ) {
+                _ss >> manipname;
             }
             else if( name == "maxmanipspeed") {
                 _ss >> maxmanipspeed;
@@ -625,6 +649,18 @@ protected:
             }
             else if( name == "nshortcutcycles") {
                 _ss >> nshortcutcycles;
+            }
+            else if( name == "searchvelaccelmult") {
+                _ss >> fSearchVelAccelMult;
+            }
+            else if( name == "constraintmanipdir" ) {
+                _ss >> vConstraintManipDir;
+            }
+            else if( name == "constraintglobaldir" ) {
+                _ss >> vConstraintGlobalDir;
+            }
+            else if( name == "cosmanipanglethresh" ) {
+                _ss >> fCosManipAngleThresh;
             }
             else {
                 RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));
@@ -733,20 +769,26 @@ typedef boost::shared_ptr<RRTParameters> RRTParametersPtr;
 class OPENRAVE_API BasicRRTParameters : public RRTParameters
 {
 public:
-    BasicRRTParameters() : RRTParameters(), _fGoalBiasProb(0.05f), _bProcessing(false) {
+    BasicRRTParameters() : RRTParameters(), _fGoalBiasProb(0.05f), _nRRTExtentType(0), _nMinIterations(0), _bProcessingBasic(false) {
         _vXMLParameters.push_back("goalbias");
+        _vXMLParameters.push_back("nrrtextenttype");
+        _vXMLParameters.push_back("nminiterations");
     }
 
     dReal _fGoalBiasProb;
-
+    int _nRRTExtentType; ///< the rrt extent type. if 0 then extend all the way to the sampled position. if 1, then just extend one step length before sampling again.
+    int _nMinIterations; ///< minimum iterations to do before returning a result unless user passes a PA_ReturnWithAnySolution interrupt. When the iterations are done, the RRT will choose the goal with the minimum configuration distance from the initial to return. By defautl it is 0.
+    
 protected:
-    bool _bProcessing;
+    bool _bProcessingBasic;
     virtual bool serialize(std::ostream& O, int options=0) const
     {
         if( !PlannerParameters::serialize(O, options&~1) ) {
             return false;
         }
         O << "<goalbias>" << _fGoalBiasProb << "</goalbias>" << std::endl;
+        O << "<nrrtextenttype>" << _nRRTExtentType << "</nrrtextenttype>" << std::endl;
+        O << "<nminiterations>" << _nMinIterations << "</nminiterations>" << std::endl;
         if( !(options & 1) ) {
             O << _sExtraParameters << std::endl;
         }
@@ -756,7 +798,7 @@ protected:
 
     ProcessElement startElement(const std::string& name, const AttributesList& atts)
     {
-        if( _bProcessing ) {
+        if( _bProcessingBasic ) {
             return PE_Ignore;
         }
         switch( PlannerBase::PlannerParameters::startElement(name,atts) ) {
@@ -765,20 +807,26 @@ protected:
         case PE_Ignore: return PE_Ignore;
         }
 
-        _bProcessing = name=="goalbias";
-        return _bProcessing ? PE_Support : PE_Pass;
+        _bProcessingBasic = name=="goalbias" || name =="nrrtextenttype" || name=="nminiterations";
+        return _bProcessingBasic ? PE_Support : PE_Pass;
     }
 
     virtual bool endElement(const std::string& name)
     {
-        if( _bProcessing ) {
+        if( _bProcessingBasic ) {
             if( name == "goalbias") {
                 _ss >> _fGoalBiasProb;
+            }
+            else if( name == "nrrtextenttype" ) {
+                _ss >> _nRRTExtentType;
+            }
+            else if( name == "nminiterations" ) {
+                _ss >> _nMinIterations;
             }
             else {
                 RAVELOG_WARN(str(boost::format("unknown tag %s\n")%name));
             }
-            _bProcessing = false;
+            _bProcessingBasic = false;
             return false;
         }
 

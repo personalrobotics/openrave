@@ -58,9 +58,9 @@ public:
     void init(PyEnvironmentBasePtr pyenv)
     {
         options = report->options;
-        numCols = report->numCols;
         minDistance = report->minDistance;
         numWithinTol = report->numWithinTol;
+        nKeepPrevious = report->nKeepPrevious;
         if( !!report->plink1 ) {
             plink1 = openravepy::toPyKinBodyLink(boost::const_pointer_cast<KinBody::Link>(report->plink1), pyenv);
         }
@@ -78,6 +78,19 @@ public:
             newcontacts.append(PYCONTACT(*itc));
         }
         contacts = newcontacts;
+
+        boost::python::list newLinkColliding;
+        FOREACHC(itlinks, report->vLinkColliding) {
+            object pylink1, pylink2;
+            if( !!itlinks->first ) {
+                pylink1 = openravepy::toPyKinBodyLink(boost::const_pointer_cast<KinBody::Link>(itlinks->first), pyenv);
+            }
+            if( !!itlinks->second ) {
+                pylink2 = openravepy::toPyKinBodyLink(boost::const_pointer_cast<KinBody::Link>(itlinks->second), pyenv);
+            }
+            newLinkColliding.append(boost::python::make_tuple(pylink1, pylink2));
+        }
+        vLinkColliding = newLinkColliding;
     }
 
     string __str__()
@@ -90,12 +103,12 @@ public:
 
     int options;
     object plink1, plink2;
-    int numCols;
-    //std::vector<KinBody::Link*> vLinkColliding;
+
+    boost::python::list vLinkColliding;
     dReal minDistance;
     int numWithinTol;
     boost::python::list contacts;
-
+    uint32_t nKeepPrevious;
     CollisionReportPtr report;
 };
 
@@ -190,7 +203,7 @@ public:
         if( !!pbody ) {
             return _pCollisionChecker->CheckCollision(pbody);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
     }
 
     bool CheckCollision(object o1, PyCollisionReportPtr pReport)
@@ -207,7 +220,7 @@ public:
                 bCollision = _pCollisionChecker->CheckCollision(pbody,openravepy::GetCollisionReport(pReport));
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,_pyenv);
@@ -234,7 +247,7 @@ public:
                 openravepy::UpdateCollisionReport(o2,_pyenv);
                 return bCollision;
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
         }
         KinBodyConstPtr pbody = openravepy::GetKinBody(o1);
         if( !!pbody ) {
@@ -252,9 +265,9 @@ public:
                 openravepy::UpdateCollisionReport(o2,_pyenv);
                 return bCollision;
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
     }
     bool CheckCollision(object o1, object o2, PyCollisionReportPtr pReport)
     {
@@ -273,11 +286,11 @@ public:
                     bCollision = _pCollisionChecker->CheckCollision(plink,pbody2, openravepy::GetCollisionReport(pReport));
                 }
                 else {
-                    throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
                 }
             }
         }
-        {
+        else {
             KinBodyConstPtr pbody = openravepy::GetKinBody(o1);
             if( !!pbody ) {
                 KinBody::LinkConstPtr plink2 = openravepy::GetKinBodyLinkConst(o2);
@@ -290,12 +303,12 @@ public:
                         bCollision = _pCollisionChecker->CheckCollision(pbody,pbody2, openravepy::GetCollisionReport(pReport));
                     }
                     else {
-                        throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+                        throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
                     }
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,_pyenv);
@@ -315,7 +328,7 @@ public:
         if( !!pbody1 ) {
             return _pCollisionChecker->CheckCollision(pbody1,pbody2);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
     }
 
     bool CheckCollision(object o1, PyKinBodyPtr pybody2, PyCollisionReportPtr pReport)
@@ -334,7 +347,7 @@ public:
                 bCollision = _pCollisionChecker->CheckCollision(pbody1,pbody2,openravepy::GetCollisionReport(pReport));
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,_pyenv);
@@ -345,7 +358,7 @@ public:
     {
         CollisionReportPtr preport = openravepy::GetCollisionReport(linkexcluded);
         if( !!preport ) {
-            throw OPENRAVE_EXCEPTION_FORMAT0("3rd argument should be linkexcluded, rather than CollisionReport! Try report=",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("3rd argument should be linkexcluded, rather than CollisionReport! Try report="),ORE_InvalidArguments);
         }
 
         KinBody::LinkConstPtr plink1 = openravepy::GetKinBodyLinkConst(o1);
@@ -378,7 +391,7 @@ public:
             return _pCollisionChecker->CheckCollision(pbody1,vbodyexcluded,vlinkexcluded);
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
         }
     }
 
@@ -416,7 +429,7 @@ public:
             bCollision = _pCollisionChecker->CheckCollision(pbody1, vbodyexcluded, vlinkexcluded, openravepy::GetCollisionReport(pReport));
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
         }
 
         openravepy::UpdateCollisionReport(pReport,_pyenv);
@@ -496,7 +509,7 @@ public:
             return boost::python::make_tuple(numeric::array(boost::python::list()).astype("i4"),numeric::array(boost::python::list()));
         }
         if( extract<int>(shape[1]) != 6 ) {
-            throw openrave_exception("rays object needs to be a Nx6 vector\n");
+            throw openrave_exception(_("rays object needs to be a Nx6 vector\n"));
         }
         CollisionReport report;
         CollisionReportPtr preport(&report,null_deleter());
@@ -564,7 +577,7 @@ public:
             bCollision = _pCollisionChecker->CheckSelfCollision(pbody1, openravepy::GetCollisionReport(pReport));
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid parameters to CheckSelfCollision", ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid parameters to CheckSelfCollision"), ORE_InvalidArguments);
         }
         openravepy::UpdateCollisionReport(pReport,_pyenv);
         return bCollision;
@@ -583,7 +596,7 @@ PyInterfaceBasePtr toPyCollisionChecker(CollisionCheckerBasePtr pCollisionChecke
 
 CollisionReportPtr GetCollisionReport(object o)
 {
-    if( o == object() ) {
+    if( IS_PYTHONOBJECT_NONE(o) ) {
         return CollisionReportPtr();
     }
     extract<PyCollisionReportPtr> pyreport(o);
@@ -641,7 +654,10 @@ void init_openravepy_collisionchecker()
     .value("UseTolerance",CO_UseTolerance)
     .value("Contacts",CO_Contacts)
     .value("RayAnyHit",CO_RayAnyHit)
-    .value("ActiveDOFs",CO_ActiveDOFs);
+    .value("ActiveDOFs",CO_ActiveDOFs)
+    .value("AllLinkCollisions", CO_AllLinkCollisions)
+    .value("AllGeometryContacts", CO_AllGeometryContacts)
+    ;
     enum_<CollisionAction>("CollisionAction" DOXY_ENUM(CollisionAction))
     .value("DefaultAction",CA_DefaultAction)
     .value("Ignore",CA_Ignore)
@@ -658,10 +674,11 @@ void init_openravepy_collisionchecker()
     .def_readonly("options",&PyCollisionReport::options)
     .def_readonly("plink1",&PyCollisionReport::plink1)
     .def_readonly("plink2",&PyCollisionReport::plink2)
-    .def_readonly("numCols",&PyCollisionReport::numCols)
     .def_readonly("minDistance",&PyCollisionReport::minDistance)
     .def_readonly("numWithinTol",&PyCollisionReport::numWithinTol)
     .def_readonly("contacts",&PyCollisionReport::contacts)
+    .def_readonly("vLinkColliding",&PyCollisionReport::vLinkColliding)
+    .def_readonly("nKeepPrevious", &PyCollisionReport::nKeepPrevious)
     .def("__str__",&PyCollisionReport::__str__)
     .def("__unicode__",&PyCollisionReport::__unicode__)
     ;

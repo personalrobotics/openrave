@@ -16,11 +16,12 @@ if( CRLIBM_FOUND AND NOT APPLE )
   add_definitions("-DUSE_CRLIBM")
 
   # check the accuracy of the current math library with crlibm
-  add_executable(check_libm_accuracy check_libm_accuracy_main.cpp)
-  target_link_libraries(check_libm_accuracy ${CRLIBM_LIBRARY} ${STDC_LIBRARY})
+  add_executable(check_libm_accuracy-native check_libm_accuracy_main.cpp)
+  set_target_properties(check_libm_accuracy-native PROPERTIES COMPILE_FLAGS "${NATIVE_COMPILE_FLAGS}")
+  target_link_libraries(check_libm_accuracy-native ${NATIVE_CRLIBM_LIBRARY} ${STDC_LIBRARY})
   set(libm_accuracy_results_h "${CMAKE_CURRENT_BINARY_DIR}/libm_accuracy_results.h")
-  add_custom_command(TARGET check_libm_accuracy POST_BUILD
-    COMMAND check_libm_accuracy ARGS ${libm_accuracy_results_h}
+  add_custom_command(TARGET check_libm_accuracy-native POST_BUILD
+    COMMAND check_libm_accuracy-native ARGS ${libm_accuracy_results_h}
     COMMENT "Checking accuracy between libm and crlibm")
   add_definitions(-DLIBM_ACCURACY_RESULTS_H=\"${libm_accuracy_results_h}\")
 endif()
@@ -65,6 +66,10 @@ else()
   endif()
 endif()
 
+if( LOG4CXX_FOUND )
+  set(openrave_libraries ${openrave_libraries} ${LOG4CXX_LIBRARIES})
+endif()
+
 add_subdirectory(libopenrave)
 add_subdirectory(libopenrave-core)
 
@@ -92,8 +97,8 @@ endif()
 target_link_libraries (openrave ${Boost_DATE_TIME_LIBRARY} ${Boost_THREAD_LIBRARY} ${SOCKET_LIBS} libopenrave libopenrave-core)
 
 install(TARGETS openrave DESTINATION bin COMPONENT ${COMPONENT_PREFIX}base)
-if( OPT_BUILD_PACKAGE_DEFAULT )
-  InstallSymlink(${CMAKE_INSTALL_PREFIX}/bin/openrave${OPENRAVE_BIN_SUFFIX} ${CMAKE_INSTALL_PREFIX}/bin/openrave)
+if( OPT_BUILD_PACKAGE_DEFAULT AND OPENRAVE_BIN_SUFFIX )
+  InstallSymlink(${CMAKE_INSTALL_PREFIX}/bin/openrave${OPENRAVE_BIN_SUFFIX} ${CMAKE_INSTALL_PREFIX}/bin/openrave)
 endif()
 
 # always extract the models since we don't know when models.tgz has been changed

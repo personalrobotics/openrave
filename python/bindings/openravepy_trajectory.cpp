@@ -76,6 +76,36 @@ public:
         return toPyArray(values);
     }
 
+    object SamplePoints2D(object otimes) const
+    {
+        vector<dReal> values;
+        std::vector<dReal> vtimes = ExtractArray<dReal>(otimes);
+        _ptrajectory->SamplePoints(values,vtimes);
+
+        int numdof = _ptrajectory->GetConfigurationSpecification().GetDOF();
+        npy_intp dims[] = { npy_intp(values.size()/numdof), npy_intp(numdof) };
+        PyObject *pypos = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
+        if( values.size() > 0 ) {
+            memcpy(PyArray_DATA(pypos), &values[0], values.size()*sizeof(values[0]));
+        }
+        return static_cast<numeric::array>(handle<>(pypos));
+    }
+
+    object SamplePoints2D(object otimes, PyConfigurationSpecificationPtr pyspec) const
+    {
+        vector<dReal> values;
+        ConfigurationSpecification spec = openravepy::GetConfigurationSpecification(pyspec);
+        std::vector<dReal> vtimes = ExtractArray<dReal>(otimes);
+        _ptrajectory->SamplePoints(values, vtimes, spec);
+        
+        npy_intp dims[] = { npy_intp(values.size()/spec.GetDOF()), npy_intp(spec.GetDOF()) };
+        PyObject *pypos = PyArray_SimpleNew(2,dims, sizeof(dReal)==8 ? PyArray_DOUBLE : PyArray_FLOAT);
+        if( values.size() > 0 ) {
+            memcpy(PyArray_DATA(pypos), &values[0], values.size()*sizeof(values[0]));
+        }
+        return static_cast<numeric::array>(handle<>(pypos));
+    }
+
     object GetConfigurationSpecification() const {
         return object(openravepy::toPyConfigurationSpecification(_ptrajectory->GetConfigurationSpecification()));
     }
@@ -112,6 +142,11 @@ public:
         return static_cast<numeric::array>(handle<>(pypos));
     }
 
+    object GetAllWaypoints2D() const
+    {
+        return GetWaypoints2D(0, _ptrajectory->GetNumWaypoints());
+    }
+    
     object GetWaypoints2D(size_t startindex, size_t endindex, PyConfigurationSpecificationPtr pyspec) const
     {
         vector<dReal> values;
@@ -123,6 +158,11 @@ public:
             memcpy(PyArray_DATA(pypos), &values[0], values.size()*sizeof(values[0]));
         }
         return static_cast<numeric::array>(handle<>(pypos));
+    }
+
+    object GetAllWaypoints2D(PyConfigurationSpecificationPtr pyspec) const
+    {
+        return GetWaypoints2D(0, _ptrajectory->GetNumWaypoints(), pyspec);
     }
 
     object GetWaypoint(int index) const
@@ -231,10 +271,14 @@ void init_openravepy_trajectory()
     void (PyTrajectoryBase::*Insert4)(size_t,object,PyConfigurationSpecificationPtr,bool) = &PyTrajectoryBase::Insert;
     object (PyTrajectoryBase::*Sample1)(dReal) const = &PyTrajectoryBase::Sample;
     object (PyTrajectoryBase::*Sample2)(dReal, PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::Sample;
+    object (PyTrajectoryBase::*SamplePoints2D1)(object) const = &PyTrajectoryBase::SamplePoints2D;
+    object (PyTrajectoryBase::*SamplePoints2D2)(object, PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::SamplePoints2D;
     object (PyTrajectoryBase::*GetWaypoints1)(size_t,size_t) const = &PyTrajectoryBase::GetWaypoints;
     object (PyTrajectoryBase::*GetWaypoints2)(size_t,size_t,PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::GetWaypoints;
     object (PyTrajectoryBase::*GetWaypoints2D1)(size_t,size_t) const = &PyTrajectoryBase::GetWaypoints2D;
     object (PyTrajectoryBase::*GetWaypoints2D2)(size_t,size_t,PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::GetWaypoints2D;
+    object (PyTrajectoryBase::*GetAllWaypoints2D1)() const = &PyTrajectoryBase::GetAllWaypoints2D;
+    object (PyTrajectoryBase::*GetAllWaypoints2D2)(PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::GetAllWaypoints2D;
     object (PyTrajectoryBase::*GetWaypoint1)(int) const = &PyTrajectoryBase::GetWaypoint;
     object (PyTrajectoryBase::*GetWaypoint2)(int,PyConfigurationSpecificationPtr) const = &PyTrajectoryBase::GetWaypoint;
     class_<PyTrajectoryBase, boost::shared_ptr<PyTrajectoryBase>, bases<PyInterfaceBase> >("Trajectory", DOXY_CLASS(TrajectoryBase), no_init)
@@ -246,12 +290,16 @@ void init_openravepy_trajectory()
     .def("Remove",&PyTrajectoryBase::Remove,args("startindex","endindex"),DOXY_FN(TrajectoryBase,Remove))
     .def("Sample",Sample1,args("time"),DOXY_FN(TrajectoryBase,Sample "std::vector; dReal"))
     .def("Sample",Sample2,args("time","spec"),DOXY_FN(TrajectoryBase,Sample "std::vector; dReal; const ConfigurationSpecification"))
+    .def("SamplePoints2D",SamplePoints2D1,args("times"),DOXY_FN(TrajectoryBase,SamplePoints2D "std::vector; std::vector"))
+    .def("SamplePoints2D",SamplePoints2D2,args("times","spec"),DOXY_FN(TrajectoryBase,SamplePoints2D "std::vector; std::vector; const ConfigurationSpecification"))
     .def("GetConfigurationSpecification",&PyTrajectoryBase::GetConfigurationSpecification,DOXY_FN(TrajectoryBase,GetConfigurationSpecification))
     .def("GetNumWaypoints",&PyTrajectoryBase::GetNumWaypoints,DOXY_FN(TrajectoryBase,GetNumWaypoints))
     .def("GetWaypoints",GetWaypoints1,args("startindex","endindex"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector"))
     .def("GetWaypoints",GetWaypoints2,args("startindex","endindex","spec"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector, const ConfigurationSpecification&"))
     .def("GetWaypoints2D",GetWaypoints2D1,args("startindex","endindex"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector"))
     .def("GetWaypoints2D",GetWaypoints2D2,args("startindex","endindex","spec"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector, const ConfigurationSpecification&"))
+    .def("GetAllWaypoints2D",GetAllWaypoints2D1,DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector"))
+    .def("GetAllWaypoints2D",GetAllWaypoints2D2,args("spec"),DOXY_FN(TrajectoryBase, GetWaypoints "size_t; size_t; std::vector, const ConfigurationSpecification&"))
     .def("GetWaypoint",GetWaypoint1,args("index"),DOXY_FN(TrajectoryBase, GetWaypoint "int; std::vector"))
     .def("GetWaypoint",GetWaypoint2,args("index","spec"),DOXY_FN(TrajectoryBase, GetWaypoint "int; std::vector; const ConfigurationSpecification"))
     .def("GetFirstWaypointIndexAfterTime",&PyTrajectoryBase::GetFirstWaypointIndexAfterTime, DOXY_FN(TrajectoryBase, GetFirstWaypointIndexAfterTime))

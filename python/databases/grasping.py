@@ -221,7 +221,10 @@ class GraspingModel(DatabaseGenerator):
                 for geom,isdraw in self.hiddengeoms:
                     geom.SetDraw(isdraw)
 
-    def __init__(self,robot,target,maxvelmult=None):
+    def __init__(self,robot,target,maxvelmult=None,graspparametersdof=None):
+        """
+        :param graspparametersdof: a dictionary of custom grasp parameters names and their DOF
+        """
         DatabaseGenerator.__init__(self,robot=robot)
         assert(target is not None)
         self.target = target
@@ -240,6 +243,8 @@ class GraspingModel(DatabaseGenerator):
         self.finestep = None
         # only the indices used by the TaskManipulation plugin should start with an 'i'
         graspdof = {'igraspdir':3,'igrasppos':3,'igrasproll':1,'igraspstandoff':1,'igrasppreshape':len(self.manip.GetGripperIndices()),'igrasptrans':12,'imanipulatordirection':3,'forceclosure':1,'grasptrans_nocol':12,'performance':1,'vintersectplane':4, 'igraspfinalfingers':len(self.manip.GetGripperIndices()), 'ichuckingdirection':len(self.manip.GetGripperIndices()), 'graspikparam_nocol':8, 'approachdirectionmanip':3, 'igrasptranslationoffset':3 }
+        if graspparametersdof is not None:
+                graspdof.update(graspparametersdof)
         # graspikparam_nocol is the serialized IkParameterization. It can hold a max of 8 values, the first being the type
         self.graspindices = dict()
         self.totaldof = 0
@@ -630,6 +635,11 @@ class GraspingModel(DatabaseGenerator):
                 
     def show(self,delay=0.1,options=None,forceclosure=True,showcontacts=True):
         with self.robot.CreateRobotStateSaver():
+            # disable all links not children to the manipulator
+            manipchildlinks = self.manip.GetChildLinks()
+            for link in self.robot.GetLinks():
+                if not link in manipchildlinks:
+                    link.Enable(False)
             with self.GripperVisibility(self.manip):
                 time.sleep(1.0) # let viewer update?
                 graspingnoise=None
@@ -666,12 +676,15 @@ class GraspingModel(DatabaseGenerator):
                     except planning_error,e:
                         print 'bad grasp!',e
 
-    def showgrasp(self,grasp,collisionfree=False,useik=False,delay=None):
+    def showgrasp(self,grasp,collisionfree=False,useik=False,delay=None,showfinal=False):
         with self.robot.CreateRobotStateSaver():
             with self.GripperVisibility(self.manip):
                 time.sleep(0.1) # wait sometime for viewer to process the visibility change
                 with self.env:
-                    self.setPreshape(grasp)
+                    if showfinal:
+                        self.setFinalFingerValues(grasp)
+                    else:
+                        self.setPreshape(grasp)
                     Tgrasp = self.getGlobalGraspTransform(grasp,collisionfree=collisionfree)
                     if useik and collisionfree:
                         sol = self.manip.FindIKSolution(Tgrasp,IkFilterOptions.CheckEnvCollisions)
@@ -767,6 +780,9 @@ class GraspingModel(DatabaseGenerator):
     def setPreshape(self,grasp):
         """sets the preshape on the robot, assumes environment is locked"""
         self.robot.SetDOFValues(grasp[self.graspindices['igrasppreshape']],self.manip.GetGripperIndices())
+    def setFinalFingerValues(self,grasp):
+        self.robot.SetDOFValues(grasp[self.graspindices['igraspfinalfingers']],self.manip.GetGripperIndices())
+    
     def getPreshape(self,grasp):
         """returns the preshape joint values"""
         return grasp[self.graspindices['igrasppreshape']]

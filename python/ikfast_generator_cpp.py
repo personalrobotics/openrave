@@ -250,9 +250,6 @@ IKFAST_COMPILE_ASSERT(IKFAST_VERSION==%s);
 #include <algorithm>
 #include <complex>
 
-#define IKFAST_STRINGIZE2(s) #s
-#define IKFAST_STRINGIZE(s) IKFAST_STRINGIZE2(s)
-
 #ifndef IKFAST_ASSERT
 #include <stdexcept>
 #include <sstream>
@@ -319,14 +316,14 @@ inline double IKsqr(double f) { return f*f; }
 inline float IKlog(float f) { return logf(f); }
 inline double IKlog(double f) { return log(f); }
 
-// allows asin and acos to exceed 1
+// allows asin and acos to exceed 1. has to be smaller than thresholds used for branch conds and evaluation
 #ifndef IKFAST_SINCOS_THRESH
-#define IKFAST_SINCOS_THRESH ((IkReal)2e-6)
+#define IKFAST_SINCOS_THRESH ((IkReal)1e-7)
 #endif
 
-// used to check input to atan2 for degenerate cases
+// used to check input to atan2 for degenerate cases. has to be smaller than thresholds used for branch conds and evaluation
 #ifndef IKFAST_ATAN2_MAGTHRESH
-#define IKFAST_ATAN2_MAGTHRESH ((IkReal)2e-6)
+#define IKFAST_ATAN2_MAGTHRESH ((IkReal)1e-7)
 #endif
 
 // minimum distance of separate solutions
@@ -336,7 +333,7 @@ inline double IKlog(double f) { return log(f); }
 
 // there are checkpoints in ikfast that are evaluated to make sure they are 0. This threshold speicfies by how much they can deviate
 #ifndef IKFAST_EVALCOND_THRESH
-#define IKFAST_EVALCOND_THRESH ((IkReal)0.000005)
+#define IKFAST_EVALCOND_THRESH ((IkReal)0.00001)
 #endif
 
 
@@ -536,12 +533,12 @@ return solver.ComputeIk(eetrans,eerot,pfree,solutions);
 
 IKFAST_API const char* GetKinematicsHash() { return "%s"; }
 
-IKFAST_API const char* GetIkFastVersion() { return IKFAST_STRINGIZE(IKFAST_VERSION); }
+IKFAST_API const char* GetIkFastVersion() { return "%s"; }
 
 #ifdef IKFAST_NAMESPACE
 } // end namespace
 #endif
-"""%(self.kinematicshash)
+"""%(self.kinematicshash, self.version)
 
         code += """
 #ifndef IKFAST_NO_MAIN
@@ -1974,9 +1971,9 @@ IkReal r00 = 0, r11 = 0, r22 = 0;
                 code2 = cStringIO.StringIO()
                 code2.write('CheckValue<IkReal> %s = IKatan2WithCheck(IkReal('%iktansymbol)
                 code3,sepcodelist = self._WriteExprCode(expr.args[0], code2)
-                code2.write('),')
+                code2.write('),IkReal(')
                 code4,sepcodelist2 = self._WriteExprCode(expr.args[1], code2)
-                code2.write(',IKFAST_ATAN2_MAGTHRESH);\nif(!%s.valid){\ncontinue;\n}\n'%iktansymbol)
+                code2.write('),IKFAST_ATAN2_MAGTHRESH);\nif(!%s.valid){\ncontinue;\n}\n'%iktansymbol)
                 sepcodelist += sepcodelist2
                 sepcodelist.append(code2.getvalue())
                 

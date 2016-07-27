@@ -79,6 +79,7 @@ if not __openravepy_build_doc__:
 else:
     from numpy import array
 
+from ..openravepy_int import RaveGetDefaultViewerType
 from . import DatabaseGenerator
 import inversekinematics, kinematicreachability
 from .. import interfaces
@@ -87,6 +88,7 @@ import logging
 log = logging.getLogger('openravepy.'+__name__.split('.',2)[-1])
 
 class VisibilityModel(DatabaseGenerator):
+    visibilitytransforms = None # a list of camera pose in the pattern coordinate system
     class GripperVisibility:
         """Used to hide links not beloning to gripper.
 
@@ -216,8 +218,9 @@ class VisibilityModel(DatabaseGenerator):
             with self.env:
                 sensor = self.attachedsensor.GetSensor()
                 if sensor is not None: # set power to 0?
-                    sensordata = sensor.GetSensorGeometry(Sensor.Type.Camera)
-                    self.KK = sensordata.KK
+                    sensorgeom = sensor.GetSensorGeometry(Sensor.Type.Camera)
+                    sensordata = sensor.GetSensorData(Sensor.Type.Camera)
+                    self.KK = sensorgeom.KK.K
                     self.dims = sensordata.imagedata.shape
                         
                 with RobotStateSaver(self.robot):
@@ -288,10 +291,58 @@ class VisibilityModel(DatabaseGenerator):
         finally:
             # have to destroy the plot handle
             h = None
+
+    def ShowTransform(self, relativepose, options=None):
+        """moves the robot links temporarily to show a transform
+        """
+        if self.robot != self.sensorrobot:
+            pts = poseMult(self.sensorrobot.GetTransformPose(), InvertPose(relativepose))[4:7]
+        else:
+            pts = poseMult(self.target.GetTransformPose(), relativepose)[4:7]
+        h=self.env.plot3(pts,5,colors=array([0.5,0.5,1,0.2]))
+        try:
+            with RobotStateSaver(self.robot):
+                # disable all non-child links
+                for link in self.robot.GetLinks():
+                    link.Enable(link in self.manip.GetChildLinks())
+                with self.GripperVisibility(self.manip):
+                    with self.env:
+                        if len(self.preshapes) > 0:
+                            self.robot.SetDOFValues(self.preshapes[0],self.manip.GetGripperIndices())
+
+                        if self.robot != self.sensorrobot:
+                            # sensor is not attached to robot
+                            # robot should be grabbing the targt
+                            assert(self.robot.IsGrabbing(self.target) is not None)
+                            linkrelativepose = poseMult(poseMult(self.attachedsensor.GetTransformPose(),InvertPose(relativepose)), InvertPose(self.target.GetTransformPose()))
+                            for link in self.manip.GetChildLinks():
+                                link.SetTransform(poseMult(linkrelativepose, link.GetTransformPose()))
+                        else:
+                            # robot should not be grabbing the targt
+                            assert(self.robot.IsGrabbing(self.target) is None)
+                            linkrelativepose = poseMult(InvertPose(self.attachedsensor.GetTransformPose()),self.manip.GetTransformPose())
+                            globalCameraPose = poseMult(self.target.GetTransformPose(), relativepose)
+                            grasppose = poseMult(globalCameraPose, linkrelativepose)
+                            deltapose = poseMult(grasppose,InvertPose(self.manip.GetTransformPose()))
+                            for link in self.manip.GetChildLinks():
+                                link.SetTransform(poseMult(deltapose,link.GetTransformPose()))
+                        visibility = self.visualprob.ComputeVisibility()
+                        self.env.UpdatePublishedBodies()
+                    msg='visibility=%d, press any key to continue: '%(visibility)
+                    if options is not None and options.showimage:
+                        pilutil=__import__('scipy.misc',fromlist=['pilutil'])
+                        I=self.getCameraImage()
+                        print(msg)
+                        pilutil.imshow(I)
+                    else:
+                        raw_input(msg)
+        finally:
+            # have to destroy the plot handle
+            h = None
             
     def show(self,options=None):
         if self.env.GetViewer() is None:
-            self.env.SetViewer('qtcoin')
+            self.env.SetViewer(RaveGetDefaultViewerType())
             time.sleep(0.4) # give time for viewer to initialize
         self.attachedsensor.GetSensor().Configure(Sensor.ConfigureCommand.PowerOn)
         self.attachedsensor.GetSensor().Configure(Sensor.ConfigureCommand.RenderDataOn)

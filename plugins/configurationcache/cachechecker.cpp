@@ -122,7 +122,8 @@ public:
         _pintchecker->SetGeometryGroup(groupname);
     }
 
-    virtual const std::string& GetGeometryGroup() {
+    virtual const std::string& GetGeometryGroup() const
+    {
         return _pintchecker->GetGeometryGroup();
     }
 
@@ -230,7 +231,6 @@ public:
             if( !!report ) {
                 report->plink1 = robotlink;
                 report->plink2 = collidinglink;
-                report->numCols = 1;
             }
             return true;
         } // (free configuration)
@@ -352,7 +352,6 @@ public:
             if( !!report ) {
                 report->plink1 = robotlink;
                 report->plink2 = collidinglink;
-                report->numCols = 1;
             }
             return true;
         }

@@ -383,12 +383,10 @@ public:
     template <typename U> RaveTransform(const RaveTransform<U>& t) {
         rot = t.rot;
         trans = t.trans;
-        T fnorm = rot.lengthsqr4();
-        MATH_ASSERT( fnorm > 0.99f && fnorm < 1.01f );
+        MATH_ASSERT( rot.lengthsqr4() > 0.99f && rot.lengthsqr4() < 1.01f );
     }
     template <typename U> RaveTransform(const RaveVector<U>& rot, const RaveVector<U>& trans) : rot(rot), trans(trans) {
-        T fnorm = rot.lengthsqr4();
-        MATH_ASSERT( fnorm > 0.99f && fnorm < 1.01f );
+        MATH_ASSERT( rot.lengthsqr4() > 0.99f && rot.lengthsqr4() < 1.01f );
     }
     inline RaveTransform(const RaveTransformMatrix<T>&t);
 
@@ -430,8 +428,7 @@ public:
         t.rot.z = rot.x*r.rot.z + rot.z*r.rot.x + rot.w*r.rot.y - rot.y*r.rot.w;
         t.rot.w = rot.x*r.rot.w + rot.w*r.rot.x + rot.y*r.rot.z - rot.z*r.rot.y;
         // normalize the transformation
-        T fnorm = t.rot.lengthsqr4();
-        MATH_ASSERT( fnorm > 0.99f && fnorm < 1.01f );
+        MATH_ASSERT( t.rot.lengthsqr4() > 0.99f && t.rot.lengthsqr4() < 1.01f );
         t.rot.normalize4();
         return t;
     }
@@ -469,8 +466,7 @@ public:
     template <typename U> inline RaveTransform<T>& operator= (const RaveTransform<U>&r) {
         trans = r.trans;
         rot = r.rot;
-        T fnorm = rot.lengthsqr4();
-        MATH_ASSERT( fnorm > 0.99f && fnorm < 1.01f );
+        MATH_ASSERT( rot.lengthsqr4() > 0.99f && rot.lengthsqr4() < 1.01f );
         return *this;
     }
 
@@ -983,13 +979,16 @@ inline RaveVector<T> quatInverse(const RaveVector<T>& quat)
 /// \param quat0 quaternion, (s,vx,vy,vz)
 /// \param quat1 quaternion, (s,vx,vy,vz)
 /// \param t real value in [0,1]. 0 returns quat1, 1 returns quat2
+/// \param forceshortarc if true, will force interpolating along the shortest arc. otherwsise uses the long arc
 template <typename T>
-inline RaveVector<T> InterpolateQuatSlerp(const RaveVector<T>& quat0, const RaveVector<T>& quat1, T t)
+inline RaveVector<T> InterpolateQuatSlerp(const RaveVector<T>& quat0, const RaveVector<T>& quat1, T t, bool forceshortarc=true)
 {
     // quaternion to return
     RaveVector<T> qb, qm;
-    if( quat0.dot(quat1) < 0 ) {
+    bool islongarc = quat0.dot(quat1) < 0;
+    if( forceshortarc && islongarc ) {
         qb = -quat1;
+        islongarc = false;
     }
     else {
         qb = quat1;
@@ -1007,10 +1006,19 @@ inline RaveVector<T> InterpolateQuatSlerp(const RaveVector<T>& quat0, const Rave
     // if theta = 180 degrees then result is not fully defined
     // we could rotate around any axis normal to quat0 or qb
     if (MATH_FABS(sinHalfTheta) < 1e-7f) { // fabs is floating point absolute
-        qm.w = (quat0.w * 0.5f + qb.w * 0.5f);
-        qm.x = (quat0.x * 0.5f + qb.x * 0.5f);
-        qm.y = (quat0.y * 0.5f + qb.y * 0.5f);
-        qm.z = (quat0.z * 0.5f + qb.z * 0.5f);
+        if( islongarc ) {
+            qm.w = (quat0.w * 0.5f - qb.w * 0.5f);
+            qm.x = (quat0.x * 0.5f - qb.x * 0.5f);
+            qm.y = (quat0.y * 0.5f - qb.y * 0.5f);
+            qm.z = (quat0.z * 0.5f - qb.z * 0.5f);
+        }
+        else {
+            qm.w = (quat0.w * 0.5f + qb.w * 0.5f);
+            qm.x = (quat0.x * 0.5f + qb.x * 0.5f);
+            qm.y = (quat0.y * 0.5f + qb.y * 0.5f);
+            qm.z = (quat0.z * 0.5f + qb.z * 0.5f);
+        }
+        qm.normalize4();
         return qm;
     }
     T ratioA = MATH_SIN((1 - t) * halfTheta) / sinHalfTheta;
@@ -1020,15 +1028,26 @@ inline RaveVector<T> InterpolateQuatSlerp(const RaveVector<T>& quat0, const Rave
     qm.x = (quat0.x * ratioA + qb.x * ratioB);
     qm.y = (quat0.y * ratioA + qb.y * ratioB);
     qm.z = (quat0.z * ratioA + qb.z * ratioB);
+    if( islongarc ) {
+        // have to normalize if going along the big arc
+        T f = qm.lengthsqr4();
+        if( f > 1e-7 ) {
+            qm /= RaveSqrt(f);
+        }
+        else {
+            // cannot normalize? just choose quat0
+            qm = quat0;
+        }
+    }
     return qm;
 }
 
 
 /// \brief interpolate quaterion based on spherical spline interpolation (squad method)
 template <typename T>
-inline RaveVector<T> InterpolateQuatSquad(const RaveVector<T>& quat0, const RaveVector<T>& quat1, const RaveVector<T>& quat2, const RaveVector<T>& quat3, T t)
+inline RaveVector<T> InterpolateQuatSquad(const RaveVector<T>& quat0, const RaveVector<T>& quat1, const RaveVector<T>& quat2, const RaveVector<T>& quat3, T t, bool forceshortarc=true)
 {
-    return InterpolateQuatSlerp<T>(InterpolateQuatSlerp<T>(quat0, quat3, t), InterpolateQuatSlerp<T>(quat1, quat2, t), 2*t*(1-t));
+    return InterpolateQuatSlerp<T>(InterpolateQuatSlerp<T>(quat0, quat3, t, forceshortarc), InterpolateQuatSlerp<T>(quat1, quat2, t, forceshortarc), 2*t*(1-t), forceshortarc);
 }
 
 template <typename T>

@@ -12,72 +12,96 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "osgpick.h"
-#include "osgviewerQtContext.h"
+#include "osgrenderitem.h"
 
 namespace qtosgrave {
 
-void PickHandler::pick(osgViewer::View* view, const osgGA::GUIEventAdapter& ea)
+OSGPickHandler::OSGPickHandler(const HandleRayPickFn& handleRayPickFn, const DragFn& dragfn) : _handleRayPickFn(handleRayPickFn), _dragfn(dragfn), _bDoPickCallOnButtonRelease(false)
 {
-    osgUtil::LineSegmentIntersector::Intersections intersections;
+}
 
-    osg::ref_ptr<osg::Node> node;
-    std::string gdlist="";
-    float x = ea.getX();
-    float y = ea.getY();
-#if 0
-    osg::ref_ptr< osgUtil::LineSegmentIntersector > picker = new osgUtil::LineSegmentIntersector(osgUtil::Intersector::WINDOW, x, y);
-    osgUtil::IntersectionVisitor iv(picker.get());
-    view->getCamera()->accept(iv);
-    if (picker->containsIntersections())
+OSGPickHandler::~OSGPickHandler()
+{
+}
+
+bool OSGPickHandler::handle(const osgGA::GUIEventAdapter& ea,osgGA::GUIActionAdapter& aa)
+{
+    osg::ref_ptr<osgViewer::View> view(dynamic_cast<osgViewer::View*>(&aa));
+    switch(ea.getEventType())
     {
-        intersections = picker->getIntersections();
-#else
-    if (view->computeIntersections(x,y,intersections))
+    case osgGA::GUIEventAdapter::DOUBLECLICK:
     {
-#endif
-        for(osgUtil::LineSegmentIntersector::Intersections::iterator hitr = intersections.begin();
-            hitr != intersections.end();
-            ++hitr)
-        {
-            if (!hitr->nodePath.empty() && !(hitr->nodePath.back()->getName().empty()))
-            {
-                // the geodes are identified by name.
-                gdlist  = hitr->nodePath.back()->getName();
-                node = hitr->drawable->getParent(0);
-                break;
-            }
-            else if (hitr->drawable.valid())
-            {
-                gdlist  = hitr->drawable->className();
-
-
+        //doubleClick();
+        return false;
+    }
+    case osgGA::GUIEventAdapter::RELEASE:
+    {
+        if( (ea.getButton() & osgGA::GUIEventAdapter::LEFT_MOUSE_BUTTON) && _bDoPickCallOnButtonRelease ) {
+            _bDoPickCallOnButtonRelease = false;
+            if (!!view) {
+                _Pick(view, ea, 1);
             }
         }
+        return false;
     }
-
-    //  If selection is activated
-    if (_select)
-    {
-        _viewer->select(node);
+    case osgGA::GUIEventAdapter::PUSH:
+        if( ea.getButton() & osgGA::GUIEventAdapter::LEFT_MOUSE_BUTTON ) {
+            _bDoPickCallOnButtonRelease = true;
+        }
+        else {
+            _bDoPickCallOnButtonRelease = false;
+        }
+        return false;
+    case osgGA::GUIEventAdapter::MOVE: {
+        if (!!view) {
+            _Pick(view, ea, 0);
+        }
+        return false;
+    }
+    case osgGA::GUIEventAdapter::DRAG:
+        _bDoPickCallOnButtonRelease = false; // mouse moved, so cancel any button presses
+        if( !!_dragfn) {
+            _dragfn();
+        }
+        return false;
+        
+    default:
+        return false;
     }
 }
 
-void PickHandler::doubleClick()
+void OSGPickHandler::_Pick(osg::ref_ptr<osgViewer::View> view, const osgGA::GUIEventAdapter& ea, int buttonPressed)
 {
-    if (_viewer->isSimpleView)
-    {
-        _viewer->setMultipleView();
+    if( !_handleRayPickFn ) {
+        return;
     }
-    else
-    {
-        _viewer->setSimpleView();
+    
+    try {
+        float x = ea.getX();
+        float y = ea.getY();
+        osgUtil::LineSegmentIntersector::Intersections intersections;
+        if (view->computeIntersections(x,y,intersections)) {
+            for(osgUtil::LineSegmentIntersector::Intersections::iterator hitr = intersections.begin(); hitr != intersections.end(); ++hitr) {
+                if (!hitr->nodePath.empty() ) {
+                    // if any node in the path has userdata that casts to OSGItemUserData, then we have hit a real item and should call _handleRayPickFn
+                    FOREACHC(itnode, hitr->nodePath) {
+                        if( !!(*itnode)->getUserData() ) {
+                            OSGItemUserData* pdata = dynamic_cast<OSGItemUserData*>((*itnode)->getUserData());
+                            if( !!pdata ) {
+                                _handleRayPickFn(*hitr, buttonPressed, ea.getModKeyMask());
+                                return;
+                            }
+                        }
+                    }
+                }
+            }            
+        }
+        // if still here, then no intersection
+        _handleRayPickFn(osgUtil::LineSegmentIntersector::Intersection(), buttonPressed, ea.getModKeyMask());
     }
-}
-
-//  Active joint selection
-void PickHandler::activeSelect(bool active)
-{
-    _select = active;
+    catch(const std::exception& ex) {
+        RAVELOG_WARN_FORMAT("exception in osg picker: %s", ex.what());
+    }
 }
 
 }

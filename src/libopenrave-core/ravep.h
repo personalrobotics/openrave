@@ -278,7 +278,15 @@ bool ParseXMLData(BaseXMLReaderPtr preader, const std::string& pdata);
 BaseXMLReaderPtr CreateEnvironmentReader(EnvironmentBasePtr penv, const AttributesList& atts);
 BaseXMLReaderPtr CreateInterfaceReader(EnvironmentBasePtr penv, InterfaceType type, InterfaceBasePtr& pinterface, const std::string& xmltag, const AttributesList& atts);
 BaseXMLReaderPtr CreateInterfaceReader(EnvironmentBasePtr penv, const AttributesList& atts, bool bAddToEnvironment);
-bool CreateTriMeshData(EnvironmentBasePtr, const std::string& filename, const Vector &vscale, TriMesh& trimesh, RaveVector<float>&diffuseColor, RaveVector<float>&ambientColor, float &ftransparency);
+
+/// \brief creates a trimesh from reading a file. tries to automatically determine the format by the filename extension
+bool CreateTriMeshFromFile(EnvironmentBasePtr, const std::string& filename, const Vector &vscale, TriMesh& trimesh, RaveVector<float>&diffuseColor, RaveVector<float>&ambientColor, float &ftransparency);
+
+/// \brief creates a trimesh from in-memory data. format is automatically determined from contents of data
+///
+/// \param formathint is the hint to the underlying cad importer for the format of data
+bool CreateTriMeshFromData(const std::string& data, const std::string& formathint, const Vector &vscale, TriMesh& trimesh, RaveVector<float>&diffuseColor, RaveVector<float>&ambientColor, float &ftransparency);
+
 bool CreateGeometries(EnvironmentBasePtr penv, const std::string& filename, const Vector& vscale, std::list<KinBody::GeometryInfo>& listGeometries);
 }
 
@@ -308,4 +316,5 @@ bool RaveParseXFile(EnvironmentBasePtr penv, RobotBasePtr& pprobot, const std::s
 bool RaveParseXData(EnvironmentBasePtr penv, KinBodyPtr& ppbody, const std::vector<char>& data,const AttributesList& atts);
 bool RaveParseXData(EnvironmentBasePtr penv, RobotBasePtr& pprobot, const std::vector<char>& data,const AttributesList& atts);
 
+#define _(msgid) OpenRAVE::RaveGetLocalizedTextForDomain("openrave", msgid)
 #endif

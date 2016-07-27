@@ -49,7 +49,7 @@ public:
         case IKP_TranslationXAxisAngleZNorm4D: SetTranslationXAxisAngleZNorm4D(o[0],extract<dReal>(o[1])); break;
         case IKP_TranslationYAxisAngleXNorm4D: SetTranslationYAxisAngleXNorm4D(o[0],extract<dReal>(o[1])); break;
         case IKP_TranslationZAxisAngleYNorm4D: SetTranslationZAxisAngleYNorm4D(o[0],extract<dReal>(o[1])); break;
-        default: throw OPENRAVE_EXCEPTION_FORMAT("incorrect ik parameterization type 0x%x", type, ORE_InvalidArguments);
+        default: throw OPENRAVE_EXCEPTION_FORMAT(_("incorrect ik parameterization type 0x%x"), type, ORE_InvalidArguments);
         }
     }
     PyIkParameterization(boost::shared_ptr<PyIkParameterization> pyikparam) {
@@ -345,11 +345,11 @@ object toPyIkParameterization(const std::string& serializeddata)
 class IkParameterization_pickle_suite : public pickle_suite
 {
 public:
-    static tuple getinitargs(const PyIkParameterization &r)
+    static boost::python::tuple getinitargs(const PyIkParameterization &r)
     {
         std::stringstream ss; ss << std::setprecision(std::numeric_limits<dReal>::digits10+1);
         ss << r._param;
-        return make_tuple(ss.str());
+        return boost::python::make_tuple(ss.str());
     }
 };
 

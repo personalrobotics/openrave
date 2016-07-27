@@ -66,7 +66,7 @@ object toPyArray(const Transform& t)
 AttributesList toAttributesList(boost::python::dict odict)
 {
     AttributesList atts;
-    if( !(odict == object()) ) {
+    if( !IS_PYTHONOBJECT_NONE(odict) ) {
         boost::python::list iterkeys = (boost::python::list)odict.iterkeys();
         size_t num = boost::python::len(iterkeys);
         for (size_t i = 0; i < num; i++) {
@@ -82,7 +82,7 @@ AttributesList toAttributesList(boost::python::dict odict)
 AttributesList toAttributesList(boost::python::list oattributes)
 {
     AttributesList atts;
-    if( !(oattributes == object()) ) {
+    if( !IS_PYTHONOBJECT_NONE(oattributes) ) {
         size_t num=len(oattributes);
         for (size_t i = 0; i < num; i++) {
             // Because we know they're strings, we can do this
@@ -96,7 +96,7 @@ AttributesList toAttributesList(boost::python::list oattributes)
 
 AttributesList toAttributesList(boost::python::object oattributes)
 {
-    if( !(oattributes == object()) ) {
+    if( !IS_PYTHONOBJECT_NONE(oattributes) ) {
         boost::python::extract<boost::python::dict> odictextractor(oattributes);
         if( odictextractor.check() ) {
             return toAttributesList((boost::python::dict)odictextractor());
@@ -106,6 +106,270 @@ AttributesList toAttributesList(boost::python::object oattributes)
         return toAttributesList((boost::python::list)olistextractor());
     }
     return AttributesList();
+}
+
+/// \brief manages all the viewers created through SetViewer into a single thread
+class ViewerManager
+{
+    /// \brief info about the viewer to create or that is created
+    struct ViewerInfo
+    {
+        EnvironmentBasePtr _penv;
+        std::string _viewername;
+        ViewerBasePtr _pviewer; /// the created viewer
+        boost::condition _cond;  ///< notify when viewer thread is done processing and has initialized _pviewer
+        bool _bShowViewer; ///< true if should show the viewer when initially created
+    };
+    typedef boost::shared_ptr<ViewerInfo> ViewerInfoPtr;
+public:
+    ViewerManager() {
+        _bShutdown = false;
+        _bInMain = false;
+        _threadviewer.reset(new boost::thread(boost::bind(&ViewerManager::_RunViewerThread, this)));
+    }
+
+    virtual ~ViewerManager() {
+        Destroy();
+    }
+
+    /// \brief adds a viewer to the environment whose GUI thread will be managed by _RunViewerThread
+    ///
+    /// \param bDoNotAddIfExists if true, will not add a viewer if one already exists and is added to the manager
+    ViewerBasePtr AddViewer(EnvironmentBasePtr penv, const string &strviewer, bool bShowViewer, bool bDoNotAddIfExists=true)
+    {
+        ViewerBasePtr pviewer;
+        if( strviewer.size() > 0 ) {
+
+            if( bDoNotAddIfExists ) {
+                // check all existing viewers
+                boost::mutex::scoped_lock lock(_mutexViewer);
+                std::list<ViewerInfoPtr>::iterator itviewer = _listviewerinfos.begin();
+                while(itviewer != _listviewerinfos.end() ) {
+                    if( (*itviewer)->_penv == penv ) {
+                        if( (*itviewer)->_viewername == strviewer ) {
+                            if( !!(*itviewer)->_pviewer ) {
+                                (*itviewer)->_pviewer->Show(bShowViewer);
+                            }
+                            return (*itviewer)->_pviewer;
+                        }
+
+                        // should remove the viewer so can re-add a new one
+                        if( !!(*itviewer)->_pviewer ) {
+                            (*itviewer)->_penv->Remove((*itviewer)->_pviewer);
+                        }
+                        itviewer = _listviewerinfos.erase(itviewer);
+                    }
+                    else {
+                        ++itviewer;
+                    }
+                }
+            }
+                
+            ViewerInfoPtr pinfo(new ViewerInfo());
+            pinfo->_penv = penv;
+            pinfo->_viewername = strviewer;
+            pinfo->_bShowViewer = bShowViewer;
+            if( _bInMain ) {
+                // create in this thread since viewer thread is already waiting on another viewer
+                pviewer = RaveCreateViewer(penv, strviewer);
+                if( !!pviewer ) {
+                    penv->AddViewer(pviewer);
+                    // TODO uncomment once Show posts to queue
+                    if( bShowViewer ) {
+                        pviewer->Show(1);
+                    }
+                    pinfo->_pviewer = pviewer;
+                    boost::mutex::scoped_lock lock(_mutexViewer);
+                    _listviewerinfos.push_back(pinfo);
+                    _conditionViewer.notify_all();
+                }
+            }
+            else {
+                // no viewer has been created yet, so let the viewer thread create it (if using Qt, this initializes the QApplication in the right thread
+                boost::mutex::scoped_lock lock(_mutexViewer);
+                _listviewerinfos.push_back(pinfo);
+                _conditionViewer.notify_all();
+
+                /// wait until viewer thread process it
+                pinfo->_cond.wait(_mutexViewer);
+                pviewer = pinfo->_pviewer;
+            }
+        }
+        return pviewer;
+    }
+
+    /// \brief if removed, returns true
+    bool RemoveViewer(ViewerBasePtr pviewer)
+    {
+        if( !pviewer ) {
+            return false;
+        }
+        {
+            boost::mutex::scoped_lock lock(_mutexViewer);
+            FOREACH(itviewer, _listviewerinfos) {
+                ViewerBasePtr ptestviewer = (*itviewer)->_pviewer;
+                if(ptestviewer == pviewer ) {
+                    pviewer->quitmainloop();
+                    _listviewerinfos.erase(itviewer);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// \brief if anything removed, returns true
+    bool RemoveViewersOfEnvironment(EnvironmentBasePtr penv)
+    {
+        if( !penv ) {
+            return false;
+        }
+        bool bremoved = false;
+        {
+            boost::mutex::scoped_lock lock(_mutexViewer);
+            std::list<ViewerInfoPtr>::iterator itinfo = _listviewerinfos.begin();
+            while(itinfo != _listviewerinfos.end() ) {
+                if( (*itinfo)->_penv == penv ) {
+                    itinfo = _listviewerinfos.erase(itinfo);
+                    bremoved = true;
+                }
+                else {
+                    ++itinfo;
+                }
+            }
+        }
+        return bremoved;
+    }
+
+    void Destroy() {
+        _bShutdown = true;
+        {
+            boost::mutex::scoped_lock lock(_mutexViewer);
+            // have to notify everyone
+            FOREACH(itinfo, _listviewerinfos) {
+                (*itinfo)->_cond.notify_all();
+            }
+            _listviewerinfos.clear();
+            _conditionViewer.notify_all();
+        }
+        if( !!_threadviewer ) {
+            _threadviewer->join();
+        }
+        _threadviewer.reset();
+    }
+
+protected:
+    void _RunViewerThread()
+    {
+        while(!_bShutdown) {
+            std::list<ViewerBasePtr> listviewers, listtempviewers;
+            bool bShowViewer = true;
+            {
+                boost::mutex::scoped_lock lock(_mutexViewer);
+                if( _listviewerinfos.size() == 0 ) {
+                    _conditionViewer.wait(lock);
+                    if( _listviewerinfos.size() == 0 ) {
+                        continue;
+                    }
+                }
+
+                listtempviewers.clear(); // viewers to add to env once lock is released
+                listviewers.clear();
+                std::list<ViewerInfoPtr>::iterator itinfo = _listviewerinfos.begin();
+                while(itinfo != _listviewerinfos.end() ) {
+                    ViewerInfoPtr pinfo = *itinfo;
+                    if( !pinfo->_pviewer ) {
+                        pinfo->_pviewer = RaveCreateViewer(pinfo->_penv, pinfo->_viewername);
+                        // have to notify other thread that viewer is present before the environment lock happens! otherwise we can get into deadlock between c++ and python
+                        pinfo->_cond.notify_all();
+                        if( !!pinfo->_pviewer ) {
+                            listtempviewers.push_back(pinfo->_pviewer);
+                            ++itinfo;
+                        }
+                        else {
+                            // erase from _listviewerinfos
+                            itinfo = _listviewerinfos.erase(itinfo);
+                        }
+                    }
+                    else {
+                        ++itinfo;
+                    }
+                    
+                    if( !!pinfo->_pviewer ) {
+                        if( listviewers.size() == 0 ) {
+                            bShowViewer = pinfo->_bShowViewer;
+                        }
+                        listviewers.push_back(pinfo->_pviewer);
+                    }
+                }
+            }
+
+            FOREACH(itaddviewer, listtempviewers) {
+                (*itaddviewer)->GetEnv()->AddViewer(*itaddviewer);
+            }
+            
+            ViewerBasePtr puseviewer;
+            FOREACH(itviewer, listviewers) {
+                // double check if viewer is added to env
+                bool bfound = false;
+                listtempviewers.clear();
+                (*itviewer)->GetEnv()->GetViewers(listtempviewers);
+                FOREACH(itviewer2, listtempviewers) {
+                    if( *itviewer == *itviewer2 ) {
+                        bfound = true;
+                        break;
+                    }
+                }
+                if( bfound ) {
+                    puseviewer = *itviewer;
+                    break;
+                }
+                else {
+                    // viewer is not in environment any more, so erase from list
+                    listviewers.erase(itviewer);
+                    break; // break since modifying list
+                }
+            }
+
+            listtempviewers.clear();
+
+            if( !!puseviewer ) {
+                _bInMain = true;
+                puseviewer->main(bShowViewer);
+                _bInMain = false;
+                // remove from _listviewerinfos in order to avoid running the main loop again
+                {
+                    boost::mutex::scoped_lock lock(_mutexViewer);
+                    FOREACH(itinfo, _listviewerinfos) {
+                        if( (*itinfo)->_pviewer == puseviewer ) {
+                            _listviewerinfos.erase(itinfo);
+                            break;
+                        }
+                    }
+                }
+                puseviewer.reset();
+            }
+            // just go and run the next viewer's loop, don't exit here!
+        }
+        RAVELOG_DEBUG("shutting down viewer manager thread\n");
+    }
+
+    boost::shared_ptr<boost::thread> _threadviewer;
+    boost::mutex _mutexViewer;
+    boost::condition _conditionViewer;
+    std::list<ViewerInfoPtr> _listviewerinfos;
+    
+    bool _bShutdown; ///< if true, shutdown everything
+    bool _bInMain; ///< if true, viewer thread is running a main function
+};
+
+boost::shared_ptr<ViewerManager> GetViewerManager()
+{
+    static boost::shared_ptr<ViewerManager> viewermanager;
+    if( !viewermanager ) {
+        viewermanager.reset(new ViewerManager());
+    }
+    return viewermanager;
 }
 
 PyInterfaceBase::PyInterfaceBase(InterfaceBasePtr pbase, PyEnvironmentBasePtr pyenv) : _pbase(pbase), _pyenv(pyenv)
@@ -175,12 +439,8 @@ class PyEnvironmentBase : public boost::enable_shared_from_this<PyEnvironmentBas
     boost::mutex _envmutex;
     std::list<boost::shared_ptr<EnvironmentMutex::scoped_lock> > _listenvlocks, _listfreelocks;
 #endif
-    ViewerBasePtr _pviewer;
 protected:
     EnvironmentBasePtr _penv;
-    boost::shared_ptr<boost::thread> _threadviewer;
-    boost::mutex _mutexViewer;
-    boost::condition _conditionViewer;
 
     PyInterfaceBasePtr _toPyInterface(InterfaceBasePtr pinterface)
     {
@@ -203,26 +463,6 @@ protected:
         case PT_SpaceSampler: return openravepy::toPySpaceSampler(boost::static_pointer_cast<SpaceSamplerBase>(pinterface),shared_from_this());
         }
         return PyInterfaceBasePtr();
-    }
-
-    void _ViewerThread(const string &strviewer, bool bShowViewer)
-    {
-        _pviewer.reset();
-        {
-            boost::mutex::scoped_lock lock(_mutexViewer);
-            _pviewer = RaveCreateViewer(_penv, strviewer);
-            if( !!_pviewer ) {
-                _penv->AddViewer(_pviewer);
-            }
-            _conditionViewer.notify_all();
-        }
-
-        if( !_pviewer ) {
-            return;
-        }
-        _pviewer->main(bShowViewer);     // spin until quitfrommainloop is called
-        _penv->Remove(_pviewer);
-        _pviewer.reset();
     }
 
     void _BodyCallback(object fncallback, KinBodyPtr pbody, int action)
@@ -251,7 +491,7 @@ protected:
             PyErr_Print();
         }
         CollisionAction ret = CA_DefaultAction;
-        if(( res == object()) || !res ) {
+        if( IS_PYTHONOBJECT_NONE(res) || !res ) {
             ret = CA_DefaultAction;
             RAVELOG_WARN("collision callback nothing returning, so executing default action\n");
         }
@@ -286,21 +526,14 @@ public:
 
     virtual ~PyEnvironmentBase()
     {
-        if( !!_threadviewer ) {
-            _threadviewer->join();
-        }
-        _threadviewer.reset();
-        _pviewer.reset();
     }
 
     void Reset() {
         _penv->Reset();
     }
     void Destroy() {
+        GetViewerManager()->RemoveViewersOfEnvironment(_penv);        
         _penv->Destroy();
-        if( !!_threadviewer ) {
-            _threadviewer->join();
-        }
     }
 
     PyEnvironmentBasePtr CloneSelf(int options)
@@ -325,7 +558,7 @@ public:
             if( !!_penv->GetViewer() && !!pyreference->GetEnv()->GetViewer() ) {
                 if( _penv->GetViewer()->GetXMLId() != pyreference->GetEnv()->GetViewer()->GetXMLId() ) {
                     RAVELOG_VERBOSE("reset the viewer since it has to be cloned\n");
-                    boost::mutex::scoped_lock lockcreate(pyreference->_mutexViewer);
+                    //boost::mutex::scoped_lock lockcreate(pyreference->_mutexViewer);
                     SetViewer("");
                 }
             }
@@ -381,7 +614,7 @@ public:
         if( !!pbody ) {
             return _penv->CheckCollision(pbody);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
     }
 
     bool CheckCollision(object o1, PyCollisionReportPtr pReport)
@@ -398,7 +631,7 @@ public:
                 bCollision = _penv->CheckCollision(pbody,openravepy::GetCollisionReport(pReport));
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,shared_from_this());
@@ -425,7 +658,7 @@ public:
                 openravepy::UpdateCollisionReport(o2,shared_from_this());
                 return bCollision;
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
         }
         KinBodyConstPtr pbody = openravepy::GetKinBody(o1);
         if( !!pbody ) {
@@ -443,9 +676,9 @@ public:
                 openravepy::UpdateCollisionReport(o2,shared_from_this());
                 return bCollision;
             }
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
     }
     bool CheckCollision(object o1, object o2, PyCollisionReportPtr pReport)
     {
@@ -464,7 +697,7 @@ public:
                     bCollision = _penv->CheckCollision(plink,pbody2, openravepy::GetCollisionReport(pReport));
                 }
                 else {
-                    throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
                 }
             }
         }
@@ -481,12 +714,12 @@ public:
                         bCollision = _penv->CheckCollision(pbody,pbody2, openravepy::GetCollisionReport(pReport));
                     }
                     else {
-                        throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 2",ORE_InvalidArguments);
+                        throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 2"),ORE_InvalidArguments);
                     }
                 }
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,shared_from_this());
@@ -506,7 +739,7 @@ public:
         if( !!pbody1 ) {
             return _penv->CheckCollision(pbody1,pbody2);
         }
-        throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+        throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
     }
 
     bool CheckCollision(object o1, PyKinBodyPtr pybody2, PyCollisionReportPtr pReport)
@@ -525,7 +758,7 @@ public:
                 bCollision = _penv->CheckCollision(pbody1,pbody2,openravepy::GetCollisionReport(pReport));
             }
             else {
-                throw OPENRAVE_EXCEPTION_FORMAT0("CheckCollision(object) invalid argument",ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT0(_("CheckCollision(object) invalid argument"),ORE_InvalidArguments);
             }
         }
         openravepy::UpdateCollisionReport(pReport,shared_from_this());
@@ -536,7 +769,7 @@ public:
     {
         CollisionReportPtr preport = openravepy::GetCollisionReport(linkexcluded);
         if( !!preport ) {
-            throw OPENRAVE_EXCEPTION_FORMAT0("3rd argument should be linkexcluded, rather than CollisionReport! Try report=",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("3rd argument should be linkexcluded, rather than CollisionReport! Try report="),ORE_InvalidArguments);
         }
 
         KinBody::LinkConstPtr plink1 = openravepy::GetKinBodyLinkConst(o1);
@@ -569,7 +802,7 @@ public:
             return _penv->CheckCollision(pbody1,vbodyexcluded,vlinkexcluded);
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
         }
     }
 
@@ -607,7 +840,7 @@ public:
             bCollision = _penv->CheckCollision(pbody1, vbodyexcluded, vlinkexcluded, openravepy::GetCollisionReport(pReport));
         }
         else {
-            throw OPENRAVE_EXCEPTION_FORMAT0("invalid argument 1",ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT0(_("invalid argument 1"),ORE_InvalidArguments);
         }
 
         openravepy::UpdateCollisionReport(pReport,shared_from_this());
@@ -687,7 +920,7 @@ public:
             return boost::python::make_tuple(numeric::array(boost::python::list()).astype("i4"),numeric::array(boost::python::list()));
         }
         if( extract<int>(shape[1]) != 6 ) {
-            throw openrave_exception("rays object needs to be a Nx6 vector\n");
+            throw openrave_exception(_("rays object needs to be a Nx6 vector\n"));
         }
         CollisionReport report;
         CollisionReportPtr preport(&report,null_deleter());
@@ -829,6 +1062,23 @@ public:
         return toPyTriMesh(*ptrimesh);
     }
 
+    object ReadTrimeshData(const std::string& data, const std::string& formathint)
+    {
+        boost::shared_ptr<TriMesh> ptrimesh = _penv->ReadTrimeshData(boost::shared_ptr<TriMesh>(),data,formathint);
+        if( !ptrimesh ) {
+            return object();
+        }
+        return toPyTriMesh(*ptrimesh);
+    }
+    object ReadTrimeshData(const std::string& data, const std::string& formathint, object odictatts)
+    {
+        boost::shared_ptr<TriMesh> ptrimesh = _penv->ReadTrimeshData(boost::shared_ptr<TriMesh>(),data,formathint,toAttributesList(odictatts));
+        if( !ptrimesh ) {
+            return object();
+        }
+        return toPyTriMesh(*ptrimesh);
+    }
+
     void Add(PyInterfaceBasePtr pinterface, bool bAnonymous=false, const std::string& cmdargs="") {
         _penv->Add(pinterface->GetInterfaceBase(), bAnonymous, cmdargs);
     }
@@ -904,6 +1154,12 @@ public:
     }
     bool Remove(PyInterfaceBasePtr obj) {
         CHECK_POINTER(obj);
+
+        // have to check if viewer in order to notify viewer manager
+        ViewerBasePtr pviewer = RaveInterfaceCast<ViewerBase>(obj->GetInterfaceBase());
+        if( !!pviewer ) {
+            GetViewerManager()->RemoveViewer(pviewer);
+        }
         return _penv->Remove(obj->GetInterfaceBase());
     }
 
@@ -929,11 +1185,11 @@ public:
     object RegisterBodyCallback(object fncallback)
     {
         if( !fncallback ) {
-            throw openrave_exception("callback not specified");
+            throw openrave_exception(_("callback not specified"));
         }
         UserDataPtr p = _penv->RegisterBodyCallback(boost::bind(&PyEnvironmentBase::_BodyCallback,shared_from_this(),fncallback,_1,_2));
         if( !p ) {
-            throw openrave_exception("registration handle is NULL");
+            throw openrave_exception(_("registration handle is NULL"));
         }
         return openravepy::GetUserData(p);
     }
@@ -941,11 +1197,11 @@ public:
     object RegisterCollisionCallback(object fncallback)
     {
         if( !fncallback ) {
-            throw openrave_exception("callback not specified");
+            throw openrave_exception(_("callback not specified"));
         }
         UserDataPtr p = _penv->RegisterCollisionCallback(boost::bind(&PyEnvironmentBase::_CollisionCallback,shared_from_this(),fncallback,_1,_2));
         if( !p ) {
-            throw openrave_exception("registration handle is NULL");
+            throw openrave_exception(_("registration handle is NULL"));
         }
         return openravepy::GetUserData(p);
     }
@@ -1084,26 +1340,20 @@ public:
 
     bool SetViewer(const string &viewername, bool showviewer=true)
     {
-        if( !!_threadviewer ) {     // wait for the viewer
-            _threadviewer->join();
-        }
-        _threadviewer.reset();
+        ViewerBasePtr pviewer = GetViewerManager()->AddViewer(_penv, viewername, showviewer, true);
+        return !(pviewer == NULL);
+    }
 
+    /// \brief sets the default viewer
+    bool SetDefaultViewer(bool showviewer=true)
+    {
+        std::string viewername = RaveGetDefaultViewerType();
         if( viewername.size() > 0 ) {
-            boost::mutex::scoped_lock lock(_mutexViewer);
-            _threadviewer.reset(new boost::thread(boost::bind(&PyEnvironmentBase::_ViewerThread, shared_from_this(), viewername, showviewer)));
-            _conditionViewer.wait(lock);
-            //            if( !_penv->GetViewer() || _penv->GetViewer()->GetXMLId() != viewername ) {
-            //                RAVELOG_WARN("failed to create viewer %s\n", viewername.c_str());
-            //                _threadviewer->join();
-            //                _threadviewer.reset();
-            //                return false;
-            //            }
-            //            else {
-            //                RAVELOG_INFOA("viewer %s successfully attached\n", viewername.c_str());
-            //            }
+            ViewerBasePtr pviewer = GetViewerManager()->AddViewer(_penv, viewername, showviewer, true);
+            return !!pviewer;
         }
-        return true;
+
+        return false;
     }
 
     object GetViewer()
@@ -1120,7 +1370,7 @@ public:
             case 1:
                 vpoints = ExtractArray<float>(opoints);
                 if( vpoints.size()%3 ) {
-                    throw OPENRAVE_EXCEPTION_FORMAT("points have bad size %d", vpoints.size(),ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT(_("points have bad size %d"), vpoints.size(),ORE_InvalidArguments);
                 }
                 return vpoints.size()/3;
             case 2: {
@@ -1128,18 +1378,18 @@ public:
                 int dim = extract<int>(pointshape[1]);
                 vpoints = ExtractArray<float>(opoints.attr("flat"));
                 if(dim % 3) {
-                    throw OPENRAVE_EXCEPTION_FORMAT("points have bad size %dx%d", num%dim,ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT(_("points have bad size %dx%d"), num%dim,ORE_InvalidArguments);
                 }
                 return num*(dim/3);
             }
             default:
-                throw openrave_exception("points have bad dimension");
+                throw openrave_exception(_("points have bad dimension"));
             }
         }
         // assume it is a regular 1D list
         vpoints = ExtractArray<float>(opoints);
         if( vpoints.size()% 3 ) {
-            throw OPENRAVE_EXCEPTION_FORMAT("points have bad size %d", vpoints.size(),ORE_InvalidArguments);
+            throw OPENRAVE_EXCEPTION_FORMAT(_("points have bad size %d"), vpoints.size(),ORE_InvalidArguments);
         }
         return vpoints.size()/3;
     }
@@ -1147,7 +1397,7 @@ public:
     /// returns the number of colors
     static size_t _getGraphColors(object ocolors, vector<float>&vcolors)
     {
-        if( !(ocolors == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(ocolors) ) {
             if( PyObject_HasAttrString(ocolors.ptr(),"shape") ) {
                 object colorshape = ocolors.attr("shape");
                 switch( len(colorshape) ) {
@@ -1157,13 +1407,13 @@ public:
                     int numcolors = extract<int>(colorshape[0]);
                     int colordim = extract<int>(colorshape[1]);
                     if(( colordim != 3) &&( colordim != 4) ) {
-                        throw OPENRAVE_EXCEPTION_FORMAT("colors dim %d needs to be 3 or 4",colordim, ORE_InvalidArguments);
+                        throw OPENRAVE_EXCEPTION_FORMAT(_("colors dim %d needs to be 3 or 4"),colordim, ORE_InvalidArguments);
                     }
                     vcolors = ExtractArray<float>(ocolors.attr("flat"));
                     return numcolors;
                 }
                 default:
-                    throw OPENRAVE_EXCEPTION_FORMAT("colors has %d dimensions",len(colorshape), ORE_InvalidArguments);
+                    throw OPENRAVE_EXCEPTION_FORMAT(_("colors has %d dimensions"),len(colorshape), ORE_InvalidArguments);
                 }
             }
             vcolors = ExtractArray<float>(ocolors);
@@ -1171,7 +1421,7 @@ public:
                 vcolors.push_back(1.0f);
             }
             else if( vcolors.size() != 4 ) {
-                throw OPENRAVE_EXCEPTION_FORMAT("colors has incorrect number of values %d",vcolors.size(), ORE_InvalidArguments);
+                throw OPENRAVE_EXCEPTION_FORMAT(_("colors has incorrect number of values %d"),vcolors.size(), ORE_InvalidArguments);
             }
             return 1;
         }
@@ -1187,10 +1437,10 @@ public:
         size_t numpoints = _getGraphPoints(opoints,vpoints);
         size_t numcolors = _getGraphColors(ocolors,vcolors);
         if( numpoints <= 0 ) {
-            throw openrave_exception("points cannot be empty",ORE_InvalidArguments);
+            throw openrave_exception(_("points cannot be empty"),ORE_InvalidArguments);
         }
         if(( numcolors > 1) &&( numpoints != numcolors) ) {
-            throw openrave_exception(boost::str(boost::format("number of points (%d) need to match number of colors (%d)")%numpoints%numcolors));
+            throw openrave_exception(boost::str(boost::format(_("number of points (%d) need to match number of colors (%d)"))%numpoints%numcolors));
         }
         return make_pair(numpoints,numcolors);
     }
@@ -1246,7 +1496,7 @@ public:
     object drawarrow(object op1, object op2, float linewidth=0.002, object ocolor=object())
     {
         RaveVector<float> vcolor(1,0.5,0.5,1);
-        if( !(ocolor == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(ocolor) ) {
             vcolor = ExtractVector34(ocolor,1.0f);
         }
         return toPyGraphHandle(_penv->drawarrow(ExtractVector3(op1),ExtractVector3(op2),linewidth,vcolor));
@@ -1255,7 +1505,7 @@ public:
     object drawbox(object opos, object oextents, object ocolor=object())
     {
         RaveVector<float> vcolor(1,0.5,0.5,1);
-        if( !(ocolor == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(ocolor) ) {
             vcolor = ExtractVector34(ocolor,1.0f);
         }
         return toPyGraphHandle(_penv->drawbox(ExtractVector3(opos),ExtractVector3(oextents)));
@@ -1281,7 +1531,7 @@ public:
         vector<int> vindices;
         int* pindices = NULL;
         int numTriangles = vpoints.size()/9;
-        if( !(oindices == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(oindices) ) {
             vindices = ExtractArray<int>(oindices.attr("flat"));
             if( vindices.size() > 0 ) {
                 numTriangles = vindices.size()/3;
@@ -1289,7 +1539,7 @@ public:
             }
         }
         RaveVector<float> vcolor(1,0.5,0.5,1);
-        if( !(ocolors == object()) ) {
+        if( !IS_PYTHONOBJECT_NONE(ocolors) ) {
             object shape = ocolors.attr("shape");
             if( len(shape) == 1 ) {
                 return toPyGraphHandle(_penv->drawtrimesh(&vpoints[0],sizeof(float)*3,pindices,numTriangles,ExtractVector34(ocolors,1.0f)));
@@ -1363,6 +1613,8 @@ public:
             ostate["uri"] = ConvertStringToUnicode(itstate->uri);
             ostate["updatestamp"] = itstate->updatestamp;
             ostate["environmentid"] = itstate->environmentid;
+            ostate["activeManipulatorName"] = itstate->activeManipulatorName;
+            ostate["activeManipulatorTransform"] = ReturnTransform(itstate->activeManipulatorTransform);
             ostates.append(ostate);
         }
         return ostates;
@@ -1402,6 +1654,16 @@ public:
     }
     object GetUserData() const {
         return openravepy::GetUserData(_penv->GetUserData());
+    }
+
+    void SetUnit(std::string unitname, dReal unitmult){
+        _penv->SetUnit(std::make_pair(unitname, unitmult));
+    }
+
+    object GetUnit() const{
+        std::pair<std::string, dReal> unit = _penv->GetUnit();
+        return boost::python::make_tuple(unit.first, unit.second);
+        
     }
 
     bool __eq__(PyEnvironmentBasePtr p) {
@@ -1457,14 +1719,16 @@ object GetUserData(UserDataPtr pdata)
 
 EnvironmentBasePtr GetEnvironment(PyEnvironmentBasePtr pyenv)
 {
-    return pyenv->GetEnv();
+    return !pyenv ? EnvironmentBasePtr() : pyenv->GetEnv();
 }
 
 EnvironmentBasePtr GetEnvironment(object o)
 {
-    extract<PyEnvironmentBasePtr> pyenv(o);
-    if( pyenv.check() ) {
-        return ((PyEnvironmentBasePtr)pyenv)->GetEnv();
+    if( !IS_PYTHONOBJECT_NONE(o)) {
+        extract<PyEnvironmentBasePtr> pyenv(o);
+        if( pyenv.check() ) {
+            return ((PyEnvironmentBasePtr)pyenv)->GetEnv();
+        }
     }
     return EnvironmentBasePtr();
 }
@@ -1540,6 +1804,7 @@ BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetCamera_overloads, SetCamera, 2, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(StartSimulation_overloads, StartSimulation, 1, 2)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(StopSimulation_overloads, StopSimulation, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetViewer_overloads, SetViewer, 1, 2)
+BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(SetDefaultViewer_overloads, SetDefaultViewer, 0, 1)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(CheckCollisionRays_overloads, CheckCollisionRays, 2, 3)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(plot3_overloads, plot3, 2, 4)
 BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(drawlinestrip_overloads, drawlinestrip, 2, 4)
@@ -1619,7 +1884,6 @@ BOOST_PYTHON_MODULE(openravepy_int)
     exception_translator<boost::bad_function_call>();
 
     class_<PyEnvironmentBase, PyEnvironmentBasePtr > classenv("Environment", DOXY_CLASS(EnvironmentBase));
-
     {
         void (PyInterfaceBase::*setuserdata1)(PyUserData) = &PyInterfaceBase::SetUserData;
         void (PyInterfaceBase::*setuserdata2)(object) = &PyInterfaceBase::SetUserData;
@@ -1710,6 +1974,8 @@ Because race conditions can pop up when trying to lock the openrave environment 
         PyInterfaceBasePtr (PyEnvironmentBase::*readinterfacexmlfile2)(const string &,object) = &PyEnvironmentBase::ReadInterfaceURI;
         object (PyEnvironmentBase::*readtrimeshfile1)(const std::string&) = &PyEnvironmentBase::ReadTrimeshURI;
         object (PyEnvironmentBase::*readtrimeshfile2)(const std::string&,object) = &PyEnvironmentBase::ReadTrimeshURI;
+        object (PyEnvironmentBase::*readtrimeshdata1)(const std::string&,const std::string&) = &PyEnvironmentBase::ReadTrimeshData;
+        object (PyEnvironmentBase::*readtrimeshdata2)(const std::string&,const std::string&,object) = &PyEnvironmentBase::ReadTrimeshData;
         scope env = classenv
                     .def(init<optional<int> >(args("options")))
                     .def("Reset",&PyEnvironmentBase::Reset, DOXY_FN(EnvironmentBase,Reset))
@@ -1770,6 +2036,8 @@ Because race conditions can pop up when trying to lock the openrave environment 
                     .def("ReadTrimeshURI",readtrimeshfile2,args("filename","atts"), DOXY_FN(EnvironmentBase,ReadTrimeshURI))
                     .def("ReadTrimeshFile",readtrimeshfile1,args("filename"), DOXY_FN(EnvironmentBase,ReadTrimeshURI))
                     .def("ReadTrimeshFile",readtrimeshfile2,args("filename","atts"), DOXY_FN(EnvironmentBase,ReadTrimeshURI))
+                    .def("ReadTrimeshData",readtrimeshdata1,args("data", "formathint"), DOXY_FN(EnvironmentBase,ReadTrimeshData))
+                    .def("ReadTrimeshData",readtrimeshdata2,args("data","formathint","atts"), DOXY_FN(EnvironmentBase,ReadTrimeshData))
                     .def("Add", &PyEnvironmentBase::Add, Add_overloads(args("interface","anonymous","cmdargs"), DOXY_FN(EnvironmentBase,Add)))
                     .def("AddKinBody",addkinbody1,args("body"), DOXY_FN(EnvironmentBase,AddKinBody))
                     .def("AddKinBody",addkinbody2,args("body","anonymous"), DOXY_FN(EnvironmentBase,AddKinBody))
@@ -1806,6 +2074,7 @@ Because race conditions can pop up when trying to lock the openrave environment 
                     .def("LockPhysics",Lock1,args("lock"), "Locks the environment mutex.")
                     .def("LockPhysics",Lock2,args("lock","timeout"), "Locks the environment mutex with a timeout.")
                     .def("SetViewer",&PyEnvironmentBase::SetViewer,SetViewer_overloads(args("viewername","showviewer"), "Attaches the viewer and starts its thread"))
+                    .def("SetDefaultViewer",&PyEnvironmentBase::SetDefaultViewer,SetDefaultViewer_overloads(args("showviewer"), "Attaches the default viewer (controlled by environment variables and internal settings) and starts its thread"))
                     .def("GetViewer",&PyEnvironmentBase::GetViewer, DOXY_FN(EnvironmentBase,GetViewer))
                     .def("plot3",&PyEnvironmentBase::plot3,plot3_overloads(args("points","pointsize","colors","drawstyle"), DOXY_FN(EnvironmentBase,plot3 "const float; int; int; float; const float; int, bool")))
                     .def("drawlinestrip",&PyEnvironmentBase::drawlinestrip,drawlinestrip_overloads(args("points","linewidth","colors","drawstyle"), DOXY_FN(EnvironmentBase,drawlinestrip "const float; int; int; float; const float")))
@@ -1828,6 +2097,8 @@ Because race conditions can pop up when trying to lock the openrave environment 
                     .def("SetUserData",setuserdata1,args("data"), DOXY_FN(InterfaceBase,SetUserData))
                     .def("SetUserData",setuserdata2,args("data"), DOXY_FN(InterfaceBase,SetUserData))
                     .def("GetUserData",&PyEnvironmentBase::GetUserData, DOXY_FN(InterfaceBase,GetUserData))
+                    .def("GetUnit",&PyEnvironmentBase::GetUnit, DOXY_FN(EnvironmentBase,GetUnit))
+                    .def("SetUnit",&PyEnvironmentBase::SetUnit, args("unitname","unitmult"),  DOXY_FN(EnvironmentBase,SetUnit))
                     .def("__enter__",&PyEnvironmentBase::__enter__)
                     .def("__exit__",&PyEnvironmentBase::__exit__)
                     .def("__eq__",&PyEnvironmentBase::__eq__)

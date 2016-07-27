@@ -87,7 +87,13 @@ bool SolveMinTime(const Vector& x0,const Vector& dx0,const Vector& x1,const Vect
     }
     else {
         vector<std::vector<ParabolicRamp1D> > ramps;
-        Real res=SolveMinTimeBounded(x0,dx0,x1,dx1, accMax,velMax,xMin,xMax, ramps,multidofinterp);
+        ////////Puttichai
+
+        // we can switch between the original implementation (SolveMinTImeBounded) and a new
+        // implementation (SolveMinTimeBounded2) here
+
+        //Real res=SolveMinTimeBounded(x0,dx0,x1,dx1, accMax,velMax,xMin,xMax, ramps,multidofinterp);
+        Real res=SolveMinTimeBounded(x0,dx0,x1,dx1, accMax,velMax,xMin,xMax, ramps,multidofinterp);////////Puttichai
         if(res < 0) {
             return false;
         }
@@ -110,9 +116,6 @@ void DynamicPath::Init(const Vector& _velMax,const Vector& _accMax)
     velMax = _velMax;
     accMax = _accMax;
     PARABOLIC_RAMP_ASSERT(velMax.size() == accMax.size());
-    if(!velMax.empty() && !xMin.empty()) {
-        PARABOLIC_RAMP_ASSERT(xMin.size() == velMax.size());
-    }
 }
 
 void DynamicPath::SetJointLimits(const Vector& _xMin,const Vector& _xMax)
@@ -120,9 +123,6 @@ void DynamicPath::SetJointLimits(const Vector& _xMin,const Vector& _xMax)
     xMin = _xMin;
     xMax = _xMax;
     PARABOLIC_RAMP_ASSERT(xMin.size() == xMax.size());
-    if(!velMax.empty() && !xMin.empty()) {
-        PARABOLIC_RAMP_ASSERT(xMin.size() == velMax.size());
-    }
 }
 
 Real DynamicPath::GetTotalTime() const
@@ -440,14 +440,16 @@ struct RampSection
 };
 
 
-bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* feas,DistanceCheckerBase* distance,int maxiters)
+int CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* feas,DistanceCheckerBase* distance,int maxiters, __attribute__((unused)) int options)
 {
     ramp.constraintchecked = 1;
-    if(!feas->ConfigFeasible(ramp.x0, ramp.dx0)) {
-        return false;
+    int ret0 = feas->ConfigFeasible(ramp.x0, ramp.dx0);
+    if( ret0 != 0) {
+        return ret0;
     }
-    if(!feas->ConfigFeasible(ramp.x1, ramp.dx1)) {
-        return false;
+    int ret1 = feas->ConfigFeasible(ramp.x1, ramp.dx1);
+    if( ret1 != 0 ) {
+        return ret1;
     }
     PARABOLIC_RAMP_ASSERT(distance->ObstacleDistanceNorm()==Inf);
     RampSection section;
@@ -458,10 +460,10 @@ bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* feas,Distance
     section.da = distance->ObstacleDistance(ramp.x0);
     section.db = distance->ObstacleDistance(ramp.x1);
     if(section.da <= 0.0) {
-        return false;
+        return 0xffff; // no code
     }
     if(section.db <= 0.0) {
-        return false;
+        return 0xffff; // no code
     }
     list<RampSection> queue;
     queue.push_back(section);
@@ -486,8 +488,9 @@ bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* feas,Distance
             ramp.Derivative(tc,dxc);
         }
         //infeasible config
-        if(!feas->ConfigFeasible(xc, dxc)) {
-            return false;
+        int retseg = feas->ConfigFeasible(xc, dxc);
+        if( retseg != 0 ) {
+            return retseg;
         }
         //subdivide
         Real dc = distance->ObstacleDistance(xc);
@@ -507,23 +510,25 @@ bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* feas,Distance
         queue.push_back(sb);
 
         if(iters++ >= maxiters) {
-            return false;
+            return 0xffff; // no code
         }
     }
-    return true;
+    return 0;
 }
 
-bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* space,const Vector& tol,int options)
+int CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* space,const Vector& tol,int options)
 {
     PARABOLIC_RAMP_ASSERT(tol.size() == ramp.ramps.size());
     for(size_t i = 0; i < tol.size(); ++i) {
         PARABOLIC_RAMP_ASSERT(tol[i] > 0);
     }
-    if(!space->ConfigFeasible(ramp.x0, ramp.dx0, options)) {
-        return false;
+    int ret0 = space->ConfigFeasible(ramp.x0, ramp.dx0, options);
+    if( ret0 != 0 ) {
+        return ret0;
     }
-    if(!space->ConfigFeasible(ramp.x1, ramp.dx1, options)) {
-        return false;
+    int ret1 = space->ConfigFeasible(ramp.x1, ramp.dx1, options);
+    if( ret1 != 0 ) {
+        return ret1;
     }
     //PARABOLIC_RAMP_ASSERT(space->ConfigFeasible(ramp.x0));
     //PARABOLIC_RAMP_ASSERT(space->ConfigFeasible(ramp.x1));
@@ -596,8 +601,9 @@ bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* space,const V
             if( space->NeedDerivativeForFeasibility() ) {
                 ramp.Derivative(divs[j],dq2);
             }
-            if(!space->SegmentFeasible(q1,q2, dq1, dq2, divs[j]-divs[i],options)) {
-                return false;
+            int retseg = space->SegmentFeasible(q1,q2, dq1, dq2, divs[j]-divs[i],options);
+            if( retseg != 0 ) {
+                return retseg;
             }
         }
         else {
@@ -606,18 +612,19 @@ bool CheckRamp(const ParabolicRampND& ramp,FeasibilityCheckerBase* space,const V
             if( space->NeedDerivativeForFeasibility() ) {
                 ramp.Derivative(divs[k],dq1);
             }
-            if(!space->ConfigFeasible(q1, dq1,options)) {
-                return false;
+            int retconf = space->ConfigFeasible(q1, dq1,options);
+            if( retconf != 0 ) {
+                return retconf;
             }
             segs.push_back(pair<int,int>(i,k));
             segs.push_back(pair<int,int>(k,j));
         }
     }
-    return true;
+    return 0;
 }
 
-RampFeasibilityChecker::RampFeasibilityChecker(FeasibilityCheckerBase* _feas,const Vector& _tol)
-    : feas(_feas),tol(_tol),distance(NULL),maxiters(0), constraintsmask(0)
+RampFeasibilityChecker::RampFeasibilityChecker(FeasibilityCheckerBase* _feas)
+    : feas(_feas),tol(0),distance(NULL),maxiters(0), constraintsmask(0)
 {
 }
 
@@ -626,7 +633,7 @@ RampFeasibilityChecker::RampFeasibilityChecker(FeasibilityCheckerBase* _feas,Dis
 {
 }
 
-bool RampFeasibilityChecker::Check(const ParabolicRampND& x,int options)
+int RampFeasibilityChecker::Check(const ParabolicRampND& x,int options)
 {
     // only set constraintchecked if all necessary constraints are checked
     if( (options & constraintsmask) == constraintsmask ) {
@@ -690,7 +697,7 @@ bool DynamicPath::TryShortcut(Real t1,Real t2,RampFeasibilityChecker& check)
         PARABOLIC_RAMP_ASSERT(intermediate.IsValid());
     }
     for(size_t i=0; i<intermediate.ramps.size(); i++) {
-        if(!check.Check(intermediate.ramps[i])) {
+        if(check.Check(intermediate.ramps[i]) != 0) {
             return false;
         }
     }
@@ -776,7 +783,7 @@ int DynamicPath::Shortcut(int numIters,RampFeasibilityChecker& check,RandomNumbe
 
         bool feas=true;
         for(size_t i=0; i<intermediate.ramps.size(); i++)
-            if(!check.Check(intermediate.ramps[i])) {
+            if(check.Check(intermediate.ramps[i]) != 0) {
                 feas=false;
                 break;
             }
@@ -827,7 +834,7 @@ int DynamicPath::ShortCircuit(RampFeasibilityChecker& check)
         }
         bool feas=true;
         for(size_t j=0; j<intermediate.ramps.size(); j++) {
-            if(!check.Check(intermediate.ramps[j])) {
+            if(check.Check(intermediate.ramps[j]) != 0) {
                 feas=false;
                 break;
             }
@@ -898,7 +905,7 @@ int DynamicPath::OnlineShortcut(Real leadTime,Real padTime,RampFeasibilityChecke
         }
         bool feas=true;
         for(size_t i=0; i<intermediate.ramps.size(); i++) {
-            if(!check.Check(intermediate.ramps[i])) {
+            if(check.Check(intermediate.ramps[i]) != 0) {
                 feas=false;
                 break;
             }
@@ -991,6 +998,26 @@ bool DynamicPath::IsValid() const
         }
     }
     return true;
+}
+
+////////Puttichai
+void DynamicPath::Save(std::string filename) const {
+    size_t ndof = ramps[0].ramps.size();
+    for (size_t i = 1; i < ramps.size(); ++i) {
+        // simple verification
+        PARABOLIC_RAMP_ASSERT(ramps[i].ramps.size() == ndof);
+    }
+
+    std::string s = "";
+    std::string dummy;
+
+    for (size_t iramp = 0; iramp < ramps.size(); ++iramp) {
+        ramps[iramp].ToString(dummy);
+        s = s + dummy;
+    }
+
+    std::ofstream f(filename.c_str());
+    f << s;
 }
 
 } //namespace ParabolicRamp

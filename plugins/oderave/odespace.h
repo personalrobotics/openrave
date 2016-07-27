@@ -132,6 +132,7 @@ public:
             KinBody::LinkWeakPtr _plink;
             bool _bEnabled;
             Transform tlinkmass, tlinkmassinv; // the local mass frame ODE was initialized with
+            std::string bodylinkname; // for debugging purposes
         };
 
         KinBodyInfo(boost::shared_ptr<ODEResources> ode) : _ode(ode)
@@ -186,12 +187,14 @@ public:
                     delete[] *itind;
                 }
                 (*itlink)->listvertices.clear();
+                (*itlink)->_bEnabled = false;
             }
             vlinks.resize(0);
 
             FOREACH(itjoint, vjoints) {
-                if( *itjoint )
+                if( *itjoint ) {
                     dJointDestroy(*itjoint);
+                }
             }
             vjoints.resize(0);
 
@@ -243,9 +246,11 @@ private:
     }
 
     virtual ~ODESpace() {
+        DestroyEnvironment();
+        Destroy();
     }
 
-    bool InitEnvironment()
+    bool Init()
     {
 #ifdef ODE_HAVE_ALLOCATE_DATA_THREAD
         dAllocateODEDataForThread(dAllocateMaskAll);
@@ -256,10 +261,20 @@ private:
         return true;
     }
 
+    void Destroy()
+    {
+        DestroyEnvironment();
+        _ode.reset();
+    }
+
     void DestroyEnvironment()
     {
         RAVELOG_VERBOSE("destroying ode collision environment\n");
-        _ode.reset();
+        // go through all the initialized KinBodies
+        FOREACH(itbody, _setInitializedBodies) {
+            (*itbody)->RemoveUserData(_userdatakey);
+        }
+        _setInitializedBodies.clear();
     }
 
     bool IsInitialized() {
@@ -359,11 +374,10 @@ private:
             }
 
             link->_plink = *itlink;
+            link->bodylinkname = pbody->GetName() + "/" + (*itlink)->GetName();
             // Calculate ODE transform consisting of link origin + center of mass offset
             RaveTransform<dReal> t = (*itlink)->GetTransform() * link->tlinkmass;
             dBodySetPosition(link->body,t.trans.x, t.trans.y, t.trans.z);
-            BOOST_ASSERT( RaveFabs(t.rot.lengthsqr4()-1) < 0.0001f );
-            dBodySetQuaternion(link->body,&t.rot[0]);
             BOOST_ASSERT( RaveFabs(t.rot.lengthsqr4()-1) < 0.0001f );
             dBodySetQuaternion(link->body,&t.rot[0]);
             dBodySetData(link->body, link.get());     // so that the link can be retreived from the body
@@ -469,6 +483,8 @@ private:
             pinfo->_staticcallback = pbody->RegisterChangeCallback(KinBody::Prop_LinkStatic|KinBody::Prop_LinkDynamics, boost::bind(&ODESpace::_ResetKinBodyCallback,boost::bind(&OpenRAVE::utils::sptr_from<ODESpace>, weak_space()),boost::weak_ptr<KinBody const>(pbody)));
         }
 
+        pbody->SetUserData(_userdatakey, pinfo);
+        _setInitializedBodies.insert(pbody);
         _Synchronize(pinfo, false);
         return pinfo;
     }
@@ -483,7 +499,7 @@ private:
             FOREACH(itbody, vbodies) {
                 KinBodyConstPtr pbody(*itbody);
                 KinBodyInfoPtr pinfo = boost::dynamic_pointer_cast<KinBodyInfo>(pbody->GetUserData(_userdatakey));
-                if( !pinfo ) {
+                if( !!pinfo ) {
                     InitKinBody(pbody,pinfo);
                 }
             }
@@ -495,6 +511,16 @@ private:
         return _geometrygroup;
     }
 
+    void RemoveUserData(KinBodyPtr pbody)
+    {
+        if( !!pbody ) {
+            bool bremoved = pbody->RemoveUserData(_userdatakey);
+            size_t numerased = _setInitializedBodies.erase(pbody);
+            if( (size_t)bremoved != numerased ) {
+                RAVELOG_WARN("inconsistency detected with odespace user data\n");
+            }
+        }
+    }
 
     void Synchronize()
     {
@@ -592,6 +618,7 @@ private:
         if( !pinfo ) {
             pinfo = InitKinBody(pbody, KinBodyInfoPtr(), blockode);
             pbody->SetUserData(_userdatakey, pinfo);
+            _setInitializedBodies.insert(pbody);
             bcreated = true;
         }
         return std::make_pair(pinfo,bcreated);
@@ -613,6 +640,7 @@ private:
         case OpenRAVE::GT_Cylinder:
             odegeom = dCreateCylinder(0,info._vGeomData.x,info._vGeomData.y);
             break;
+        case OpenRAVE::GT_Container:
         case OpenRAVE::GT_TriMesh:
             if( info._meshcollision.indices.size() > 0 ) {
                 dTriIndex* pindices = new dTriIndex[info._meshcollision.indices.size()];
@@ -653,6 +681,7 @@ private:
         return odegeomtrans;
     }
 
+    /// \param block if true, then will lock _ode->_mutex. Set to false when mutex is known to be already locked.
     void _Synchronize(KinBodyInfoPtr pinfo, bool block=true)
     {
         if( pinfo->nLastStamp != pinfo->GetBody()->GetUpdateStamp() ) {
@@ -699,6 +728,7 @@ private:
     std::string _userdatakey;
     std::string _geometrygroup;
     SynchronizeCallbackFn _synccallback;
+    std::set<KinBodyConstPtr> _setInitializedBodies; ///< set of bodies that have been initialized and user data is set
     bool _bUsingPhysics;
 };
 

@@ -37,6 +37,7 @@ namespace ColladaDOM150 {} // declare in case earlier versions are used
 #include <1.5/dom/domTypes.h>
 #include <1.5/dom/domElements.h>
 #include <boost/lexical_cast.hpp>
+#include <boost/make_shared.hpp>
 
 namespace OpenRAVE
 {
@@ -91,7 +92,7 @@ public:
     ColladaXMLReadable() : XMLReadable(GetXMLIdStatic()) {
     }
 
-    std::list<std::string> _articulated_systemURIs; ///< urls of the articulated_system, ordered in the same way as they are read. The first is the top-most level
+    std::list< std::pair<std::string, bool> > _articulated_systemURIs; ///< pairs of (urls, isexternal) of the articulated_system, ordered in the same way as they are read. The first is the top-most level
     std::vector<ModelBinding> _bindingModelURIs;
     std::vector<AxisBinding> _bindingAxesSIDs; ///< same order as the body DOF
     std::list<AxisBinding> _bindingPassiveAxesSIDs; ///< same order as body->GetPassiveJoints()

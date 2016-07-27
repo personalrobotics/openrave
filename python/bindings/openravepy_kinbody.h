@@ -59,7 +59,7 @@ public:
     }
 
     void Restore(object p=object()) {
-        if( p == object() ) {
+        if( IS_PYTHONOBJECT_NONE(p) ) {
             _state->Restore();
         }
         else {
@@ -101,6 +101,7 @@ public:
     bool InitFromGeometries(object ogeometries, const std::string& uri=std::string());
     bool Init(object olinkinfos, object ojointinfos, const std::string& uri=std::string());
     void SetLinkGeometriesFromGroup(const std::string& geomname);
+    void SetLinkGroupGeometries(const std::string& geomname, object olinkgeometryinfos);
     void SetName(const std::string& name);
     object GetName() const;
     int GetDOF() const;
