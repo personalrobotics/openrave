@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<package>
-  <name>OpenRAVE</name>
+<package format="2">
+  <name>openrave</name>
   <version>0.9.0</version>
   <description>The openrave package</description>
 
@@ -8,6 +8,36 @@
 
   <license>LGPLv3</license>
 
+  <depend>opende</depend>
+  <depend>boost</depend>
+  <depend>libgmp</depend>
+  <depend>mpfi</depend>
+  <depend>assimp</depend>
+  <depend>libxml2</depend>
+  <depend>zlib</depend>
+  <depend>collada-dom</depend>
+  <depend>libqhull</depend>
+  <depend>libann-dev</depend>
+  <depend>log4cxx</depend>
+  <depend>liblapack-dev</depend>
+  <depend>libopenthreads</depend>
+  <depend version_gte="3.4.0">libopenscenegraph</depend>
+  <depend>libsoqt4-dev</depend>
+  <depend>bullet</depend>
+  <depend>ffmpeg</depend>
+  <depend>libfcl-dev</depend>
+  <exec_depend>libqt4</exec_depend>
+  <build_depend>libqt4-dev</build_depend>
+  <exec_depend>pcre</exec_depend>
+  <build_depend>pcre-dev</build_depend>
+
+  <!-- TODO: Add MPFR. -->
+  <!-- TODO: Add Moby. -->
+  <!-- TODO: Add MinZIP. -->
+  <!-- TODO: Add fparser. -->
+  <!-- TODO: Add coin80 or coin60 for QtCoin. -->
+  <!-- TODO: Add ivcon (?) -->
+  <!-- TODO: Add ICE (?) -->
   <buildtool_depend>cmake</buildtool_depend>
 
   <export>
