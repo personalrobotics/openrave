@@ -2177,7 +2177,7 @@ public:
                 itgeominfo->_vGeomData.y *= vscale.z;
                 break;
             case GT_TriMesh:
-                itgeominfo->_meshcollision.ApplyTransform(TransformMatrix(itgeominfo->_t).inverse() * tmnodegeom * TransformMatrix(toriginal));
+                itgeominfo->_meshcollision.ApplyTransform(TransformMatrix(tmnodegeom * toriginal).inverse() * TransformMatrix(toriginal));
                 break;
             default:
                 RAVELOG_WARN(str(boost::format("unknown geometry type: 0x%x")%itgeominfo->_type));
@@ -2639,6 +2639,10 @@ public:
             return false;
         }
 
+        std::string geomname;
+        if( !!domgeom->getName() ) {
+            geomname = domgeom->getName();
+        }
         Transform tlocalgeom;
         bool bgeomvisible = true;
         // check for OpenRAVE profile simple geometric primitives
@@ -2705,6 +2709,23 @@ public:
                                 }
                             }
                         }
+                        else if( name == "cylinderz" ) {
+                            daeElementRef pradius = children[i]->getChild("radius");
+                            daeElementRef pheight = children[i]->getChild("height");
+                            if( !!pradius && !!pheight ) {
+                                Vector vGeomData;
+                                stringstream ss(pradius->getCharData());
+                                ss >> vGeomData.x;
+                                stringstream ss2(pheight->getCharData());
+                                ss2 >> vGeomData.y;
+                                if( (ss.eof() || !!ss) && (ss2.eof() || !!ss2) ) {
+                                    geominfo._type = GT_Cylinder;
+                                    geominfo._vGeomData = vGeomData;
+                                    geominfo._t = tlocalgeom;
+                                    bfoundgeom = true;
+                                }
+                            }
+                        }
                         else if( name == "container" ) {
                             daeElementRef pouter_extents = children[i]->getChild("outer_extents");
                             if( !!pouter_extents ) {
@@ -2756,6 +2777,7 @@ public:
                     }
                     if( bfoundgeom ) {
                         FillGeometryColor(_ExtractFirstMaterial(domgeom,mapmaterials),geominfo);
+                        geominfo._name = geomname;
                         listGeometryInfos.push_back(geominfo);
                         return true;
                     }
@@ -2769,24 +2791,28 @@ public:
             for (size_t tg = 0; tg<meshRef->getTriangles_array().getCount(); tg++) {
                 listGeometryInfos.push_back(KinBody::GeometryInfo());
                 _ExtractGeometry(meshRef->getTriangles_array()[tg], meshRef->getVertices(), mapmaterials, listGeometryInfos.back(),tlocalgeominv);
+                listGeometryInfos.back()._name = geomname;
                 listGeometryInfos.back()._t = tlocalgeom;
                 listGeometryInfos.back()._bVisible = bgeomvisible;
             }
             for (size_t tg = 0; tg<meshRef->getTrifans_array().getCount(); tg++) {
                 listGeometryInfos.push_back(KinBody::GeometryInfo());
                 _ExtractGeometry(meshRef->getTrifans_array()[tg], meshRef->getVertices(), mapmaterials, listGeometryInfos.back(),tlocalgeominv);
+                listGeometryInfos.back()._name = geomname;
                 listGeometryInfos.back()._t = tlocalgeom;
                 listGeometryInfos.back()._bVisible = bgeomvisible;
             }
             for (size_t tg = 0; tg<meshRef->getTristrips_array().getCount(); tg++) {
                 listGeometryInfos.push_back(KinBody::GeometryInfo());
                 _ExtractGeometry(meshRef->getTristrips_array()[tg], meshRef->getVertices(), mapmaterials, listGeometryInfos.back(),tlocalgeominv);
+                listGeometryInfos.back()._name = geomname;
                 listGeometryInfos.back()._t = tlocalgeom;
                 listGeometryInfos.back()._bVisible = bgeomvisible;
             }
             for (size_t tg = 0; tg<meshRef->getPolylist_array().getCount(); tg++) {
                 listGeometryInfos.push_back(KinBody::GeometryInfo());
                 _ExtractGeometry(meshRef->getPolylist_array()[tg], meshRef->getVertices(), mapmaterials, listGeometryInfos.back(),tlocalgeominv);
+                listGeometryInfos.back()._name = geomname;
                 listGeometryInfos.back()._t = tlocalgeom;
                 listGeometryInfos.back()._bVisible = bgeomvisible;
             }
@@ -2846,6 +2872,7 @@ public:
 
             if( vconvexhull.size()> 0 ) {
                 listGeometryInfos.push_back(KinBody::GeometryInfo());
+                listGeometryInfos.back()._name = geomname;
                 listGeometryInfos.back()._type = GT_TriMesh;
                 listGeometryInfos.back()._t = tlocalgeom;
                 listGeometryInfos.back()._bVisible = bgeomvisible;
@@ -3519,6 +3546,9 @@ public:
         return false;
     }
     template <typename U> static domFloat resolveFloat(domCommon_float_or_paramRef paddr, const U& parent) {
+        if( !paddr ) {
+            return 0;
+        }
         if( !!paddr->getFloat() ) {
             return paddr->getFloat()->getValue();
         }
@@ -4159,47 +4189,49 @@ private:
                         }
                         else if( pelt->getElementName() == string("bind_instance_geometry") ) {
 
-                            const std::string groupname = pelt->getAttribute("type");
-                            if( groupname == "" ) {
-                                RAVELOG_WARN("encountered an empty group name");
-                            }
-
-                            domLinkRef pdomlink = daeSafeCast<domLink>(daeSidRef(pelt->getAttribute("link"), referenceElt).resolve().elt);
-                            KinBody::LinkPtr plink;
-                            if( !!pdomlink ) {
-                                plink = pbody->GetLink(_ExtractLinkName(pdomlink));
-                            }
-                            else {
-                                plink = _ResolveLinkBinding(listInstanceLinkBindings, pelt->getAttribute("link"), pbody);
-                            }
-                            if( !plink ) {
-                                RAVELOG_WARN(str(boost::format("failed to resolve link %s\n")%pelt->getAttribute("link")));
-                                continue;
-                            }
-                            BOOST_ASSERT(plink->GetParent()==pbody);
-
-                            domGeometryRef domgeom = daeSafeCast<domGeometry>(daeURI(*referenceElt, pelt->getAttribute("url")).getElement());
-                            if( !domgeom ) {
-                                RAVELOG_WARN_FORMAT("failed to retrieve geometry %s\n", pelt->getAttribute("url"));
-                                continue;
-                            }
-
-                            domMaterialRef dommat = daeSafeCast<domMaterial>(daeURI(*referenceElt, pelt->getAttribute("material")).getElement());
-                            if( !dommat ) {
-                              RAVELOG_WARN_FORMAT("failed to retrieve material for geometry %s\n", pelt->getAttribute("material"));
-                            } else {
-                              mapmaterials["mat0"] = dommat;
-                            }
-
-
-                            // TODO : There seems to be scaling factors and transforms that might be forgotten here (c.f.: ExtractGeometries)
-                            if( !ExtractGeometry(domgeom, mapmaterials, mapGeometryGroups[plink][groupname]) ) {
-                                RAVELOG_WARN_FORMAT("failed to add geometry to geometry group %s, link %s\n", groupname%plink->GetName());
-                                continue;
-                            }
-                            FOREACH(itgeominfo, mapGeometryGroups[plink][groupname]) {
-                                itgeominfo->InitCollisionMesh();
-                            }
+                            // for now don't load since we don't have good way of updating the geometry throughout the system yet.
+                            
+//                            const std::string groupname = pelt->getAttribute("type");
+//                            if( groupname == "" ) {
+//                                RAVELOG_WARN("encountered an empty group name");
+//                            }
+//
+//                            domLinkRef pdomlink = daeSafeCast<domLink>(daeSidRef(pelt->getAttribute("link"), referenceElt).resolve().elt);
+//                            KinBody::LinkPtr plink;
+//                            if( !!pdomlink ) {
+//                                plink = pbody->GetLink(_ExtractLinkName(pdomlink));
+//                            }
+//                            else {
+//                                plink = _ResolveLinkBinding(listInstanceLinkBindings, pelt->getAttribute("link"), pbody);
+//                            }
+//                            if( !plink ) {
+//                                RAVELOG_WARN(str(boost::format("failed to resolve link %s\n")%pelt->getAttribute("link")));
+//                                continue;
+//                            }
+//                            BOOST_ASSERT(plink->GetParent()==pbody);
+//
+//                            domGeometryRef domgeom = daeSafeCast<domGeometry>(daeURI(*referenceElt, pelt->getAttribute("url")).getElement());
+//                            if( !domgeom ) {
+//                                RAVELOG_WARN_FORMAT("failed to retrieve geometry %s\n", pelt->getAttribute("url"));
+//                                continue;
+//                            }
+//
+//                            domMaterialRef dommat = daeSafeCast<domMaterial>(daeURI(*referenceElt, pelt->getAttribute("material")).getElement());
+//                            if( !dommat ) {
+//                              RAVELOG_WARN_FORMAT("failed to retrieve material for geometry %s\n", pelt->getAttribute("material"));
+//                            } else {
+//                              mapmaterials["mat0"] = dommat;
+//                            }
+//
+//
+//                            // TODO : There seems to be scaling factors and transforms that might be forgotten here (c.f.: ExtractGeometries)
+//                            if( !ExtractGeometry(domgeom, mapmaterials, mapGeometryGroups[plink][groupname]) ) {
+//                                RAVELOG_WARN_FORMAT("failed to add geometry to geometry group %s, link %s\n", groupname%plink->GetName());
+//                                continue;
+//                            }
+//                            FOREACH(itgeominfo, mapGeometryGroups[plink][groupname]) {
+//                                itgeominfo->InitCollisionMesh();
+//                            }
                         }
                         else if( pelt->getElementName() == string("link_collision_state") ) {
                             domLinkRef pdomlink = daeSafeCast<domLink>(daeSidRef(pelt->getAttribute("link"), referenceElt).resolve().elt);
@@ -4908,6 +4940,10 @@ private:
         domExtraRef pextra = daeSafeCast<domExtra> (pelt->getChild("extra"));
         if( !!pextra && !!pextra->getAsset() && !!pextra->getAsset()->getUnit() ) {
             return pextra->getAsset()->getUnit()->getMeter()/_penv->GetUnit().second;
+        }
+        domAssetRef passet = daeSafeCast<domAsset>(pelt->getChild("asset"));
+        if (!!passet && !!passet->getUnit()) {
+            return passet->getUnit()->getMeter() / _penv->GetUnit().second;
         }
         if( !!pelt->getParent() ) {
             return _GetUnitScale(pelt->getParent(),startscale);

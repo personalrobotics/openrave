@@ -340,7 +340,7 @@ public:
     virtual bool InitKinBody(OpenRAVE::KinBodyPtr pbody)
     {
         EnvironmentMutex::scoped_lock lock(GetEnv()->GetMutex());
-        FCLSpace::KinBodyInfoPtr pinfo = boost::dynamic_pointer_cast<FCLSpace::KinBodyInfo>(pbody->GetUserData(_userdatakey));
+        FCLSpace::KinBodyInfoPtr pinfo = _fclspace->GetInfo(pbody);
         if( !pinfo || pinfo->GetBody() != pbody ) {
             pinfo = _fclspace->InitKinBody(pbody);
         }
@@ -480,7 +480,7 @@ public:
         CollisionObjectPtr pcollLink = _fclspace->GetLinkBV(plink);
 
         if( !pcollLink ) {
-          return false;
+            return false;
         }
 
         BroadPhaseCollisionManagerPtr bodyManager = _GetBodyManager(pbody, false);
@@ -510,7 +510,7 @@ public:
         CollisionObjectPtr pcollLink = _fclspace->GetLinkBV(plink);
 
         if( !pcollLink ) {
-          return false;
+            return false;
         }
 
         std::set<KinBodyConstPtr> attachedBodies;
@@ -551,6 +551,18 @@ public:
         } else {
             CollisionCallbackData query(shared_checker(), report, vbodyexcluded, vlinkexcluded);
             ADD_TIMING(_statistics);
+//            BODYMANAGERSMAP::iterator it0 = _bodymanagers.find(std::make_pair(pbody, (int)!!(_options & OpenRAVE::CO_ActiveDOFs)));
+//            BOOST_ASSERT(it0 != _bodymanagers.end());
+//
+//            std::set<int> setExcludeBodyIds; ///< any
+//            FOREACH(itbody, attachedBodies) {
+//                setExcludeBodyIds.insert((*itbody)->GetEnvironmentId());
+//            }
+//
+//            std::map<std::set<int>, FCLCollisionManagerInstancePtr>::iterator it1 = _envmanagers.find(setExcludeBodyIds);
+//            BOOST_ASSERT(it1 != _envmanagers.end());
+//            _bodymanager = it0->second;
+//            _envmanager = it1->second;
             envManager->collide(bodyManager.get(), &query, &FCLCollisionChecker::CheckNarrowPhaseCollision);
             return query._bCollision;
         }
@@ -686,6 +698,8 @@ private:
             return true;     // don't test anymore
         }
 
+//        _o1 = o1;
+//        _o2 = o2;
         LinkConstPtr plink1 = GetCollisionLink(*o1), plink2 = GetCollisionLink(*o2);
 
         if( !plink1 || !plink2 ) {
@@ -860,11 +874,11 @@ private:
         if( !!link_raw ) {
             LinkConstPtr plink = link_raw->GetLink();
             if( !plink ) {
-                RAVELOG_WARN_FORMAT("The link %s was lost from fclspace", link_raw->bodylinkname);
+                RAVELOG_WARN_FORMAT("The link %s was lost from fclspace (env %d) (userdatakey %s)", link_raw->bodylinkname%GetEnv()->GetId()%_userdatakey);
             }
             return plink;
         }
-        RAVELOG_WARN("fcl collision object does not have a link attached");
+        RAVELOG_WARN_FORMAT("fcl collision object does not have a link attached (env %d) (userdatakey %s)", GetEnv()->GetId()%_userdatakey);
         return LinkConstPtr();
     }
 
@@ -932,6 +946,8 @@ private:
     std::map< std::set<int>, FCLCollisionManagerInstancePtr> _envmanagers;
     int _nGetEnvManagerCacheClearCount; ///< count down until cache can be cleared
 
+//    FCLCollisionManagerInstancePtr _bodymanager, _envmanager;
+//    fcl::CollisionObject* _o1, *_o2;
 #ifdef FCLRAVE_COLLISION_OBJECTS_STATISTICS
     std::map<fcl::CollisionObject*, int> _currentlyused;
     std::map<fcl::CollisionObject*, std::map<int, int> > _usestatistics;

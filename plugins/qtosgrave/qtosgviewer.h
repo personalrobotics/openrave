@@ -138,11 +138,14 @@ public slots:
 
     /// \brief Saves the environment into a file
     void SaveEnvironment();
-    void multiWidget();
-    void simpleWidget();
+    //void multiWidget();
+    //void simpleWidget();
 
     /// \brief updates the screen with a new frame and runs viewer update logic. Also tries to update with the openrave environment
     void _UpdateViewerCallback();
+
+    /// \brief called when application quits
+    void _ProcessApplicationQuit();
 
     /// Set model home position in viewer
     void ResetViewToHome();

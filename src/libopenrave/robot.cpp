@@ -578,7 +578,7 @@ void RobotBase::SetActiveDOFs(const std::vector<int>& vJointIndices, int nAffine
 void RobotBase::SetActiveDOFs(const std::vector<int>& vJointIndices, int nAffineDOFBitmask)
 {
     FOREACHC(itj, vJointIndices) {
-        OPENRAVE_ASSERT_FORMAT(*itj>=0 && *itj<GetDOF(), "bad indices %d (dof=%d)",*itj%GetDOF(),ORE_InvalidArguments);
+        OPENRAVE_ASSERT_FORMAT(*itj>=0 && *itj<GetDOF(), "bad index %d (dof=%d)",*itj%GetDOF(),ORE_InvalidArguments);
     }
     // only reset the cache if the dof values are different
     if( _vActiveDOFIndices.size() != vJointIndices.size() ) {
@@ -1026,11 +1026,26 @@ void RobotBase::SubtractActiveDOFValues(std::vector<dReal>& q1, const std::vecto
         return;
     }
 
-    // go through all active joints
+    OPENRAVE_ASSERT_OP(q1.size(),==,q2.size());
+    OPENRAVE_ASSERT_OP(q1.size(), >=, _vActiveDOFIndices.size());
     size_t index = 0;
-    for(; index < _vActiveDOFIndices.size(); ++index) {
-        JointConstPtr pjoint = GetJointFromDOFIndex(_vActiveDOFIndices[index]);
-        q1.at(index) = pjoint->SubtractValue(q1.at(index),q2.at(index),_vActiveDOFIndices[index]-pjoint->GetDOFIndex());
+    if (_bAreAllJoints1DOFAndNonCircular) {
+        for (size_t i = 0; i < _vActiveDOFIndices.size(); ++i) {
+            q1[i] -= q2[i];
+        }
+        index = _vActiveDOFIndices.size();
+    }
+    else {
+        // go through all active joints
+        for(; index < _vActiveDOFIndices.size(); ++index) {
+            // We already did range check above
+            JointConstPtr pjoint = GetJointFromDOFIndex(_vActiveDOFIndices[index]);
+            q1[index] = pjoint->SubtractValue(q1[index],q2[index],_vActiveDOFIndices[index]-pjoint->GetDOFIndex());
+        }
+    }
+
+    if( _nAffineDOFs == OpenRAVE::DOF_NoTransform ) {
+        return;
     }
 
     if( _nAffineDOFs & OpenRAVE::DOF_X ) {

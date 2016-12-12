@@ -404,15 +404,15 @@ private:
         if( IsWrite("visual") ) {
             _visualScenesLib = daeSafeCast<domLibrary_visual_scenes>(_dom->add(COLLADA_ELEMENT_LIBRARY_VISUAL_SCENES));
             _visualScenesLib->setId("vscenes");
+        }
 
-            if( IsWrite("geometry") ) {
-                _geometriesLib = daeSafeCast<domLibrary_geometries>(_dom->add(COLLADA_ELEMENT_LIBRARY_GEOMETRIES));
-                _geometriesLib->setId("geometries");
-                _effectsLib = daeSafeCast<domLibrary_effects>(_dom->add(COLLADA_ELEMENT_LIBRARY_EFFECTS));
-                _effectsLib->setId("effects");
-                _materialsLib = daeSafeCast<domLibrary_materials>(_dom->add(COLLADA_ELEMENT_LIBRARY_MATERIALS));
-                _materialsLib->setId("materials");
-            }
+        if( IsWrite("geometry") ) {
+            _geometriesLib = daeSafeCast<domLibrary_geometries>(_dom->add(COLLADA_ELEMENT_LIBRARY_GEOMETRIES));
+            _geometriesLib->setId("geometries");
+            _effectsLib = daeSafeCast<domLibrary_effects>(_dom->add(COLLADA_ELEMENT_LIBRARY_EFFECTS));
+            _effectsLib->setId("effects");
+            _materialsLib = daeSafeCast<domLibrary_materials>(_dom->add(COLLADA_ELEMENT_LIBRARY_MATERIALS));
+            _materialsLib->setId("materials");
         }
 
         _nodesLib = daeSafeCast<domLibrary_nodes>(_dom->add(COLLADA_ELEMENT_LIBRARY_NODES));
@@ -1615,6 +1615,7 @@ private:
 
         domGeometryRef pdomgeom = daeSafeCast<domGeometry>(_geometriesLib->add(COLLADA_ELEMENT_GEOMETRY));
         {
+            pdomgeom->setName(geom->GetName().c_str());
             pdomgeom->setId(parentid.c_str());
             domMeshRef pdommesh = daeSafeCast<domMesh>(pdomgeom->add(COLLADA_ELEMENT_MESH));
             {
@@ -1704,13 +1705,10 @@ private:
                 ptec->add("sphere")->add("radius")->setCharData(ss.str());
                 break;
             case GT_Cylinder: {
-                daeElementRef pcylinder = ptec->add("cylinder");
+                daeElementRef pcylinder = ptec->add("cylinderz");
                 ss << geom->GetCylinderRadius() << " " << geom->GetCylinderRadius();
                 pcylinder->add("radius")->setCharData(ss.str());
                 pcylinder->add("height")->setCharData(boost::lexical_cast<std::string>(geom->GetCylinderHeight()));
-                // collada cylinder is oriented toward y-axis while openrave is toward z-axis
-                Transform trot(quatRotateDirection(Vector(0,1,0),Vector(0,0,1)),Vector());
-                tlocalgeom = tlocalgeom * trot;
                 break;
             }
             case GT_None:
@@ -2209,11 +2207,13 @@ private:
                         daeElementRef bind_instance_geometry = ptec->add("bind_instance_geometry");
                         bind_instance_geometry->setAttribute("type", itgeomgroup->first.c_str());
                         bind_instance_geometry->setAttribute("link", vlinksidrefs.at((*itlink)->GetIndex()).c_str());
-                        string geomid = _GetExtraGeometryId(*itlink,itgeomgroup->first,igeom);
-                        igeom++;
-                        domGeometryRef pdomgeom = WriteGeometry(boost::make_shared<const KinBody::Link::Geometry>(*itlink, **itgeominfo), geomid);
-                        bind_instance_geometry->setAttribute("url", (string("#")+geomid).c_str());
-                        bind_instance_geometry->setAttribute("material", (string("#")+geomid+string("_mat")).c_str());
+                        if( IsWrite("geometry") ) {
+                            string geomid = _GetExtraGeometryId(*itlink,itgeomgroup->first,igeom);
+                            igeom++;
+                            domGeometryRef pdomgeom = WriteGeometry(boost::make_shared<const KinBody::Link::Geometry>(*itlink, **itgeominfo), geomid);
+                            bind_instance_geometry->setAttribute("url", (string("#")+geomid).c_str());
+                            bind_instance_geometry->setAttribute("material", (string("#")+geomid+string("_mat")).c_str());
+                        }
                     }
                 }
             }
@@ -2434,20 +2434,30 @@ void RaveWriteColladaFile(EnvironmentBasePtr penv, const string& filename, const
     ColladaWriter writer(penv, atts);
     writer.Init("openrave_snapshot");
     std::string scenename;
+    FOREACHC(itatt,atts) {
+        if( itatt->first == "scenename" ) {
+            scenename = itatt->second;
+            break;
+        }
+    }
+
+    if( scenename.size() == 0 ) {
 #if defined(HAVE_BOOST_FILESYSTEM) && BOOST_VERSION >= 103600 // stem() was introduced in 1.36
 #if defined(BOOST_FILESYSTEM_VERSION) && BOOST_FILESYSTEM_VERSION >= 3
-    boost::filesystem::path pfilename(filename);
-    scenename = pfilename.stem().string();
+        boost::filesystem::path pfilename(filename);
+        scenename = pfilename.stem().string();
 #else
-    boost::filesystem::path pfilename(filename, boost::filesystem::native);
-    scenename = pfilename.stem();
+        boost::filesystem::path pfilename(filename, boost::filesystem::native);
+        scenename = pfilename.stem();
 #endif
 #endif
-    // if there's any '.', then remove them
-    size_t dotindex = scenename.find_first_of('.');
-    if( dotindex != string::npos ) {
-        scenename = scenename.substr(0, dotindex);
+        // if there's any '.', then remove them
+        size_t dotindex = scenename.find_first_of('.');
+        if( dotindex != string::npos ) {
+            scenename = scenename.substr(0, dotindex);
+        }
     }
+
     if( !writer.Write(scenename) ) {
         throw openrave_exception(_("ColladaWriter::Write(EnvironmentBasePtr) failed"));
     }
@@ -2472,19 +2482,28 @@ void RaveWriteColladaFile(const std::list<KinBodyPtr>& listbodies, const std::st
         ColladaWriter writer(listbodies.front()->GetEnv(),atts);
         writer.Init("openrave_snapshot");
         std::string scenename;
-#if defined(HAVE_BOOST_FILESYSTEM) && BOOST_VERSION >= 103600 // stem() was introduced in 1.36
-#if defined(BOOST_FILESYSTEM_VERSION) && BOOST_FILESYSTEM_VERSION >= 3
-        boost::filesystem::path pfilename(filename);
-        scenename = pfilename.stem().string();
-#else
-        boost::filesystem::path pfilename(filename, boost::filesystem::native);
-        scenename = pfilename.stem();
-#endif
-#endif
-        // if there's any '.', then remove them
-        size_t dotindex = scenename.find_first_of('.');
-        if( dotindex != string::npos ) {
-            scenename = scenename.substr(0, dotindex);
+        FOREACHC(itatt,atts) {
+            if( itatt->first == "scenename" ) {
+                scenename = itatt->second;
+                break;
+            }
+        }
+
+        if( scenename.size() == 0 ) {
+    #if defined(HAVE_BOOST_FILESYSTEM) && BOOST_VERSION >= 103600 // stem() was introduced in 1.36
+    #if defined(BOOST_FILESYSTEM_VERSION) && BOOST_FILESYSTEM_VERSION >= 3
+            boost::filesystem::path pfilename(filename);
+            scenename = pfilename.stem().string();
+    #else
+            boost::filesystem::path pfilename(filename, boost::filesystem::native);
+            scenename = pfilename.stem();
+    #endif
+    #endif
+            // if there's any '.', then remove them
+            size_t dotindex = scenename.find_first_of('.');
+            if( dotindex != string::npos ) {
+                scenename = scenename.substr(0, dotindex);
+            }
         }
         if( !writer.Write(listbodies, scenename) ) {
             throw openrave_exception(_("ColladaWriter::Write(list<KinBodyPtr>) failed"));

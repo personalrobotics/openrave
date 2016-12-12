@@ -187,6 +187,7 @@ KinBody::KinBody(InterfaceType type, EnvironmentBasePtr penv) : InterfaceBase(ty
     _environmentid = 0;
     _nNonAdjacentLinkCache = 0x80000000;
     _nUpdateStampId = 0;
+    _bAreAllJoints1DOFAndNonCircular = false;
 }
 
 KinBody::~KinBody()
@@ -460,7 +461,11 @@ bool KinBody::Init(const std::vector<KinBody::LinkInfoConstPtr>& linkinfos, cons
             plink->_collision.Append(geom->GetCollisionMesh(),geom->GetTransform());
         }
         FOREACHC(itadjacentname, info._vForcedAdjacentLinks) {
-            _vForcedAdjacentLinks.push_back(std::make_pair(info._name, *itadjacentname));
+            // make sure the same pair isn't added more than once
+            std::pair<std::string, std::string> adjpair = std::make_pair(info._name, *itadjacentname);
+            if( find(_vForcedAdjacentLinks.begin(), _vForcedAdjacentLinks.end(), adjpair) == _vForcedAdjacentLinks.end() ) {
+                _vForcedAdjacentLinks.push_back(adjpair);
+            }
         }
         _veclinks.push_back(plink);
     }
@@ -894,28 +899,38 @@ void KinBody::SimulationStep(dReal fElapsedTime)
 
 void KinBody::SubtractDOFValues(std::vector<dReal>& q1, const std::vector<dReal>& q2, const std::vector<int>& dofindices) const
 {
+    OPENRAVE_ASSERT_OP(q1.size(), ==, q2.size() );
+    if (_bAreAllJoints1DOFAndNonCircular) {
+        for(size_t i = 0; i < q1.size(); ++i) {
+            q1[i] -= q2[i];
+        }
+        return;
+    }
+
     if( dofindices.size() == 0 ) {
+        OPENRAVE_ASSERT_OP(q1.size(), ==, GetDOF() );
         FOREACHC(itjoint,_vecjoints) {
             int dof = (*itjoint)->GetDOFIndex();
             for(int i = 0; i < (*itjoint)->GetDOF(); ++i) {
                 if( (*itjoint)->IsCircular(i) ) {
-                    q1.at(dof+i) = utils::NormalizeCircularAngle(q1.at(dof+i)-q2.at(dof+i),(*itjoint)->_vcircularlowerlimit.at(i), (*itjoint)->_vcircularupperlimit.at(i));
+                    q1[dof+i] = utils::NormalizeCircularAngle(q1[dof+i]-q2[dof+i],(*itjoint)->_vcircularlowerlimit.at(i), (*itjoint)->_vcircularupperlimit.at(i));
                 }
                 else {
-                    q1.at(dof+i) -= q2.at(dof+i);
+                    q1[dof+i] -= q2[dof+i];
                 }
             }
         }
     }
     else {
+        OPENRAVE_ASSERT_OP(q1.size(), ==, dofindices.size() );
         for(size_t i = 0; i < dofindices.size(); ++i) {
             JointPtr pjoint = GetJointFromDOFIndex(dofindices[i]);
             if( pjoint->IsCircular(dofindices[i]-pjoint->GetDOFIndex()) ) {
                 int iaxis = dofindices[i]-pjoint->GetDOFIndex();
-                q1.at(i) = utils::NormalizeCircularAngle(q1.at(i)-q2.at(i), pjoint->_vcircularlowerlimit.at(iaxis), pjoint->_vcircularupperlimit.at(iaxis));
+                q1[i] = utils::NormalizeCircularAngle(q1[i]-q2[i], pjoint->_vcircularlowerlimit.at(iaxis), pjoint->_vcircularupperlimit.at(iaxis));
             }
             else {
-                q1.at(i) -= q2.at(i);
+                q1[i] -= q2[i];
             }
         }
     }
@@ -1014,7 +1029,12 @@ void KinBody::SetDOFVelocities(const std::vector<dReal>& vDOFVelocities, const V
                             else {
                                 partialvelocity = vPassiveJointVelocities.at(vdofformat[ipartial].jointindex-_vecjoints.size()).at(vdofformat[ipartial].axis);
                             }
-                            dummyvalues[i] += veval.at(ipartial) * partialvelocity;
+                            if( ipartial < veval.size() ) {
+                                dummyvalues[i] += veval.at(ipartial) * partialvelocity;
+                            }
+                            else {
+                                RAVELOG_DEBUG_FORMAT("cannot evaluate partial velocity for mimic joint %s, perhaps equations don't exist", pjoint->GetName());
+                            }
                         }
                     }
 
@@ -3092,7 +3112,7 @@ void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities
                     if( vDOFVelocities.size() > 0 ) {
                         int err = pjoint->_Eval(i,1,vtempvalues,veval);
                         if( err ) {
-                            RAVELOG_WARN(str(boost::format("failed to evaluate joint %s, fparser error %d")%pjoint->GetName()%err));
+                            RAVELOG_WARN_FORMAT("failed to evaluate joint %s, fparser error %d", pjoint->GetName()%err);
                         }
                         else {
                             for(size_t ipartial = 0; ipartial < vdofformat.size(); ++ipartial) {
@@ -3103,7 +3123,12 @@ void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities
                                 else {
                                     partialvelocity = vPassiveJointVelocities.at(vdofformat[ipartial].jointindex-_vecjoints.size()).at(vdofformat[ipartial].axis);
                                 }
-                                dummyvelocities[i] += veval.at(ipartial) * partialvelocity;
+                                if( ipartial < veval.size() ) {
+                                    dummyvelocities[i] += veval.at(ipartial) * partialvelocity;
+                                }
+                                else {
+                                    RAVELOG_DEBUG_FORMAT("cannot evaluate partial velocity for mimic joint %s, perhaps equations don't exist", pjoint->GetName());
+                                }
                             }
                         }
                         // if joint is passive, update the stored joint values! This is necessary because joint value might be referenced in the future.
@@ -3127,7 +3152,12 @@ void KinBody::_ComputeLinkAccelerations(const std::vector<dReal>& vDOFVelocities
                                 else {
                                     partialacceleration = vPassiveJointAccelerations.at(vdofformat[ipartial].jointindex-_vecjoints.size()).at(vdofformat[ipartial].axis);
                                 }
-                                dummyaccelerations[i] += veval.at(ipartial) * partialacceleration;
+                                if( ipartial < veval.size() ) {
+                                    dummyaccelerations[i] += veval.at(ipartial) * partialacceleration;
+                                }
+                                else {
+                                    RAVELOG_DEBUG_FORMAT("cannot evaluate partial acceleration for mimic joint %s, perhaps equations don't exist", pjoint->GetName());
+                                }
                             }
                         }
                         // if joint is passive, update the stored joint values! This is necessary because joint value might be referenced in the future.
@@ -4148,6 +4178,14 @@ void KinBody::_ComputeInternalInformation()
         }
     }
 
+    _bAreAllJoints1DOFAndNonCircular = true;
+    for (size_t ijoint = 0; ijoint < _vecjoints.size(); ++ijoint) {
+        if (_vecjoints[ijoint]->GetDOF() != 1 || _vecjoints[ijoint]->IsCircular()) {
+            _bAreAllJoints1DOFAndNonCircular = false;
+            break;
+        }
+    }
+
     // notify any callbacks of the changes
     std::list<UserDataWeakPtr> listRegisteredCallbacks;
     uint32_t index = 0;
@@ -4415,6 +4453,23 @@ const std::set<int>& KinBody::GetAdjacentLinks() const
 {
     CHECK_INTERNAL_COMPUTATION;
     return _setAdjacentLinks;
+}
+
+void KinBody::SetAdjacentLinks(int linkindex0, int linkindex1)
+{
+    OPENRAVE_ASSERT_OP(linkindex0,!=,linkindex1);
+    if( linkindex0 > linkindex1 ) {
+        std::swap(linkindex0, linkindex1);
+    }
+
+    _setAdjacentLinks.insert(linkindex0|(linkindex1<<16));
+    std::string linkname0 = _veclinks.at(linkindex0)->GetName();
+    std::string linkname1 = _veclinks.at(linkindex1)->GetName();
+    std::pair<std::string, std::string> adjpair = std::make_pair(linkname0, linkname1);
+    if( find(_vForcedAdjacentLinks.begin(), _vForcedAdjacentLinks.end(), adjpair) == _vForcedAdjacentLinks.end() ) {
+        _vForcedAdjacentLinks.push_back(adjpair);
+    }
+    _ResetInternalCollisionCache();
 }
 
 void KinBody::Clone(InterfaceBaseConstPtr preference, int cloningoptions)
