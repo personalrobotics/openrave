@@ -1,0 +1,114 @@
+Source: pr-openrave
+Section: misc
+Priority: extra
+Maintainer: Michael Koval <mkoval@cs.cmu.edu>
+Standards-Version: 3.9.5
+Homepage: http://openrave.org/
+Vcs-Git: https://github.com/personalrobotics/openrave.git
+Vcs-Browser: https://github.com/personalrobotics/openrave
+Build-Depends: debhelper (>= 9), cmake, pkg-config,
+ libann-dev,
+ libassimp-dev,
+ libavcodec-dev,
+ libavformat-dev,
+ libboost-date-time1.58-dev,
+ libboost-filesystem1.58-dev,
+ libboost-iostreams1.58-dev,
+ libboost-python1.58-dev,
+ libboost-regex1.58-dev,
+ libboost-system1.58-dev,
+ libboost-thread1.58-dev,
+ libboost-wave1.58-dev,
+ libboost1.58-dev,
+ libbullet-dev,
+ libbz2-dev,
+ libcoin80-dev,
+ libgmp10,
+ liblapack-dev,
+ liblog4cxx10-dev,
+ liblog4cxx10-dev,
+ libmpfi-dev,
+ libode-dev,
+ libopenscenegraph-dev,
+ libopenthreads-dev,
+ libpcre++-dev,
+ libpcre3-dev,
+ libqhull-dev,
+ libsoqt4-dev,
+ libswscale-dev,
+ libxml2-dev,
+ python-dev,
+ python-numpy,
+ python-sympy,
+ zlib1g-dev
+
+Package: pr-openrave
+Architecture: any
+Depends:
+ ${shlibs:Depends}, ${misc:Depends},
+ libann0,
+ libassimp3v5,
+ libavcodec56 | libavcodec-extra-56,
+ libavformat56 | libavformat-extra-56,
+ libboost-date-time1.58.0,
+ libboost-filesystem1.58.0,
+ libboost-iostreams1.58.0,
+ libboost-python1.58.0,
+ libboost-regex1.58.0,
+ libboost-system1.58.0,
+ libboost-thread1.58.0,
+ libboost-wave1.58.0,
+ libbz2-1.0,
+ libcoin80v5,
+ libgmp-dev,
+ liblapack3,
+ liblog4cxx10v5,
+ libmpfi0,
+ libode1,
+ libopenscenegraph100v5,
+ libopenthreads20,
+ libpcre++0,
+ libpcre3,
+ libpcrecpp0,
+ libqhull7,
+ libsoqt4-20,
+ libswscale-ffmpeg3,
+ libxml2,
+ python,
+ python-numpy,
+ python-sympy,
+ zlib1g
+Replaces:
+ openrave-minimal,
+ openrave-python-minimal,
+ openrave0.9-dp,
+ openrave0.9-dp-base,
+ openrave0.9-dp-data,
+ openrave0.9-dp-dev,
+ openrave0.9-dp-ikfast,
+ openrave0.9-dp-matlab,
+ openrave0.9-dp-octave,
+ openrave0.9-dp-plugin-bulletrave,
+ openrave0.9-dp-plugin-dualmanipulation,
+ openrave0.9-dp-plugin-grasper,
+ openrave0.9-dp-plugin-ikfastsolvers,
+ openrave0.9-dp-plugin-logging,
+ openrave0.9-dp-plugin-oderave,
+ openrave0.9-dp-plugin-qtcoinrave,
+ openrave0.9-dp-plugin-qtosgrave,
+ openrave0.9-dp-plugins-all,
+ openrave0.9-dp-plugins-base,
+ openrave0.9-dp-plugin-textserver,
+ openrave0.9-dp-python
+Description: OpenRAVE
+ OpenRAVE provides an environment for testing, developing,
+ and deploying motion planning algorithms in real-world
+ robotics applications. The main focus is on simulation
+ and analysis of kinematic and geometric information related
+ to motion planning. OpenRAVE's stand-alone nature allows is
+ to be easily integrated into existing robotics systems.
+ .
+ It provides many command line tools to work with robots and
+ planners, and the run-time core is small enough to be used
+ inside controllers and bigger frameworks. An important
+ target application is industrial robotics automation.

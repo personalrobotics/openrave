@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+export DH_VERBOSE=1
+export DEB_PYTHON2_MODULE_PACKAGES=openravepy
+
+%:
+	dh $@ --with=python2
+
+override_dh_auto_build:
+	cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr
+	make
